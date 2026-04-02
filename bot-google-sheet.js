@@ -36,7 +36,7 @@ const CHANNEL_ID = '1488904036999499910';
 // Reminder Config
 const USERS_SHEET = 'Users';       // ชื่อ Sheet ที่เก็บรายชื่อ
 const REMINDER_HOUR = 18;          // แจ้งเตือนตอน 15:00
-const REMINDER_MINUTE = 0;
+const REMINDER_MINUTE = 30;
 
 // ==================== GOOGLE SHEETS AUTH ====================
 
