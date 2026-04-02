@@ -364,7 +364,7 @@ async function aiDetectIntent(messageText, mentionedUsers) {
 
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.4-mini-2026-03-17',
       messages: [{ role: 'user', content: prompt }],
       response_format: { type: 'json_object' },
     });
