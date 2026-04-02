@@ -580,6 +580,7 @@ async function exportSheetPerPerson(filters, message) {
 
 client.once('ready', async () => {
   console.log(`✅ Bot พร้อมใช้งาน: ${client.user.tag}`);
+  console.log(`✅ AI Model: ${openai.model}` );
   console.log(`📊 เชื่อมต่อ Google Sheet ID: ${SPREADSHEET_ID}`);
 
   const headers = await getHeaders();
@@ -801,7 +802,7 @@ async function sendReminder() {
   if (!channel) return;
 
   const mentions = missing.map(u => `<@${u.discordId}>`).join(' ');
-  await channel.send(`⏰ แจ้งเตือน! ยังไม่ได้กรอกข้อมูลวันนี้:\n${mentions}\nกรุณากรอกข้อมูลด้วยนะครับ!`);
+  await channel.send(`⏰ อย่าลืมกรอกข้อมูลวันนี้นะงับค้าบบบ:\n${mentions}`);
   console.log(`⏰ แจ้งเตือน ${missing.length} คน`);
 }
 
