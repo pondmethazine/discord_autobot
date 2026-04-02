@@ -31,6 +31,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN_SHEET;
 //const CHANNEL_ID = '1481565840477388841';
 //const CHANNEL_ID = '1483304085783318598';
 const CHANNEL_ID = '1488904036999499910';
+//const CHANNEL_ID = 'test';
 
 // Reminder Config
 const USERS_SHEET = 'Users';       // ชื่อ Sheet ที่เก็บรายชื่อ
