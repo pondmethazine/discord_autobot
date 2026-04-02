@@ -580,7 +580,6 @@ async function exportSheetPerPerson(filters, message) {
 
 client.once('ready', async () => {
   console.log(`✅ Bot พร้อมใช้งาน: ${client.user.tag}`);
-  console.log(`✅ AI Model: ${openai.model}` );
   console.log(`📊 เชื่อมต่อ Google Sheet ID: ${SPREADSHEET_ID}`);
 
   const headers = await getHeaders();
