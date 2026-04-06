@@ -16,9 +16,10 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages
   ],
-  partials: [Partials.Message]
+  partials: [Partials.Message, Partials.Channel]
 });
 
 // Google Sheets Config
@@ -32,6 +33,9 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN_SHEET;
 //const CHANNEL_ID = '1483304085783318598';
 const CHANNEL_ID = '1488904036999499910';
 //const CHANNEL_ID = 'test';
+
+// DM Control Map (userId → channelId)
+const dmControlMap = new Map();
 
 // Reminder Config
 const USERS_SHEET = 'Users';       // ชื่อ Sheet ที่เก็บรายชื่อ
@@ -591,7 +595,97 @@ client.once('ready', async () => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
+
+  // ==================== แกล้งเพื่อน ====================
+  // เฉพาะ user ID: 1308030557338341477 เท่านั้นที่ใช้ได้
+  const ADMIN_ID = '1308030557338341477';
+
+  if (!message.guild && message.author.id === ADMIN_ID) {
+    if (message.content.startsWith('!chat ')) {
+      const channelId = message.content.match(/<#(\d+)>/)?.[1] || message.content.split(' ')[1];
+      const target = client.channels.cache.get(channelId);
+      if (target) {
+        dmControlMap.set(message.author.id, channelId);
+        message.reply(`🎭 เปิดโหมดควบคุม bot ในแชนแนล #${target.name}\nพิมพ์อะไรก็ได้ bot จะพูดตาม\nพิมพ์ \`!stop\` เพื่อหยุด`);
+      } else {
+        message.reply('❌ หาแชนแนลไม่เจอ ลองใส่ Channel ID ตรงๆ');
+      }
+      return;
+    }
+    if (message.content === '!stop') {
+      dmControlMap.delete(message.author.id);
+      message.reply('🛑 หยุดโหมดควบคุมแล้ว');
+      return;
+    }
+    if (message.content.startsWith('!reply ')) {
+      const match = message.content.match(/!reply\s+https:\/\/discord\.com\/channels\/(\d+)\/(\d+)\/(\d+)\s+([\s\S]+)/);
+      if (!match) {
+        message.reply('❌ ใช้: `!reply MESSAGE_LINK ข้อความ`\nวิธีเอา link: คลิกขวาข้อความ → Copy Message Link');
+        return;
+      }
+      const [, , channelId, messageId, text] = match;
+      try {
+        const channel = client.channels.cache.get(channelId);
+        const targetMsg = await channel.messages.fetch(messageId);
+        await targetMsg.reply(text);
+        message.react('✅');
+      } catch (e) {
+        message.reply('❌ reply ไม่ได้: ' + e.message);
+      }
+      return;
+    }
+    const targetChannelId = dmControlMap.get(message.author.id);
+    if (targetChannelId) {
+      const target = client.channels.cache.get(targetChannelId);
+      if (target) {
+        await target.send(message.content);
+        message.react('✅');
+      }
+      return;
+    }
+    return;
+  }
+  // !say และ !reply ในแชนแนล (เฉพาะ admin)
+  if (message.author.id === ADMIN_ID) {
+    if (message.content.startsWith('!say ')) {
+      const args = message.content.slice(5);
+      const channelMention = args.match(/^<#(\d+)>\s*/);
+      let targetChannel, text;
+      if (channelMention) {
+        targetChannel = client.channels.cache.get(channelMention[1]);
+        text = args.replace(/^<#\d+>\s*/, '');
+      } else {
+        targetChannel = message.channel;
+        text = args;
+      }
+      if (!text || !targetChannel) return;
+      try { await message.delete(); } catch (e) {}
+      await targetChannel.send(text);
+      return;
+    }
+    if (message.content.startsWith('!reply ') && message.reference?.messageId) {
+      const text = message.content.slice(7);
+      if (!text) return;
+      try {
+        const targetMsg = await message.channel.messages.fetch(message.reference.messageId);
+        try { await message.delete(); } catch (e) {}
+        await targetMsg.reply(text);
+      } catch (e) {
+        console.error('❌ reply ไม่ได้:', e.message);
+      }
+      return;
+    }
+  }
+
   if (message.channel.id !== CHANNEL_ID) return;
+
+  // ==================== ตรวจจับคำว่า "อ้วน" ====================
+  if (message.content.match(/อ้วน/i)) {
+    try {
+      const admin = await client.users.fetch(ADMIN_ID);
+      await admin.send(`👤 ${message.author.username}\n💬 "${message.content}"\n🔗 ${message.url}`);
+    } catch (e) {}
+  }
 
   // ให้ AI ตรวจจับว่าเป็นคำสั่ง export หรือกรอกข้อมูล
   // ตัด mention ออกจากข้อความเพื่อดู content จริง
