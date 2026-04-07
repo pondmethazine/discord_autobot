@@ -39,8 +39,16 @@ const dmControlMap = new Map();
 
 // Reminder Config
 const USERS_SHEET = 'Users';       // ชื่อ Sheet ที่เก็บรายชื่อ
-const REMINDER_HOUR = 18;          // แจ้งเตือนตอน 15:00
-const REMINDER_MINUTE = 30;
+// เวลาแจ้งเตือน (ชม:นาที) - แจ้งเตือนซ้ำจนกว่าจะกรอกข้อมูล
+const REMINDER_TIMES = [
+  { hour: 18, minute: 30 },
+  { hour: 19, minute: 0 },
+  { hour: 20, minute: 0 },
+  { hour: 21, minute: 0 },
+  { hour: 22, minute: 0 },
+  { hour: 23, minute: 0 },
+  { hour: 0,  minute: 0 },
+];
 
 // ==================== GOOGLE SHEETS AUTH ====================
 
@@ -905,19 +913,28 @@ async function sendReminder() {
   console.log(`⏰ แจ้งเตือน ${missing.length} คน`);
 }
 
-// ตั้งเวลาเช็คทุกนาที ถ้าถึงเวลาที่กำหนดก็แจ้งเตือน
-let reminderSentToday = false;
+// ตั้งเวลาเช็คทุก 10 วินาที ถ้าถึงเวลาที่กำหนดก็แจ้งเตือน
+// เก็บ flag ว่าเวลาไหนส่งไปแล้ว (reset ทุกวัน)
+const reminderSentFlags = new Set();
 setInterval(() => {
   const now = new Date();
-  if (now.getHours() === REMINDER_HOUR && now.getMinutes() === REMINDER_MINUTE) {
-    if (!reminderSentToday) {
-      reminderSentToday = true;
-      sendReminder();
-    }
+  const h = now.getHours();
+  const m = now.getMinutes();
+
+  // reset flags ตอนเที่ยงคืน (00:01)
+  if (h === 0 && m === 1) {
+    reminderSentFlags.clear();
   }
-  // reset flag ตอนเที่ยงคืน
-  if (now.getHours() === 0 && now.getMinutes() === 0) {
-    reminderSentToday = false;
+
+  // เช็คทุกเวลาที่ตั้งไว้
+  for (const time of REMINDER_TIMES) {
+    if (h === time.hour && m === time.minute) {
+      const key = `${time.hour}:${time.minute}`;
+      if (!reminderSentFlags.has(key)) {
+        reminderSentFlags.add(key);
+        sendReminder();
+      }
+    }
   }
 }, 10 * 1000);
 
