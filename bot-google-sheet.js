@@ -680,7 +680,7 @@ client.on('messageCreate', async (message) => {
   if (message.channel.id !== CHANNEL_ID) return;
 
   // ==================== ตรวจจับคำว่า "อ้วน" ====================
-  if (message.content.match(/อ้วน/i)) {
+  if (message.content.match(/อ้วน|อ้วง/i)) {
     try {
       const admin = await client.users.fetch(ADMIN_ID);
       await admin.send(`👤 ${message.author.username}\n💬 "${message.content}"\n🔗 ${message.url}`);
