@@ -687,6 +687,9 @@ client.on('messageCreate', async (message) => {
     } catch (e) {}
   }
 
+  // ถ้าเป็นการ reply ข้อความคนอื่น → ไม่บันทึกลง Sheet
+  if (message.reference?.messageId) return;
+
   // ให้ AI ตรวจจับว่าเป็นคำสั่ง export หรือกรอกข้อมูล
   // ตัด mention ออกจากข้อความเพื่อดู content จริง
   const cleanContent = message.content.replace(/<@!?\d+>/g, '').trim();
