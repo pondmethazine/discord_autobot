@@ -8,6 +8,17 @@ const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
 
+const holidays = require('./holidays.json');
+
+// เช็คว่าวันที่ระบุเป็นวันหยุดหรือไม่ (เสาร์-อาทิตย์ + วันหยุดนักขัตฤกษ์)
+function isHoliday(date = new Date()) {
+  const dayOfWeek = date.getDay(); // 0=อาทิตย์, 6=เสาร์
+  if (dayOfWeek === 0 || dayOfWeek === 6) return true;
+  const d = date.getDate();
+  const m = date.getMonth() + 1;
+  return holidays.some(h => h.day === d && h.month === m);
+}
+
 // ==================== CONFIG ====================
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -39,15 +50,16 @@ const dmControlMap = new Map();
 
 // Reminder Config
 const USERS_SHEET = 'Users';       // ชื่อ Sheet ที่เก็บรายชื่อ
-// เวลาแจ้งเตือน (ชม:นาที) - แจ้งเตือนซ้ำจนกว่าจะกรอกข้อมูล
+// เวลาแจ้งเตือน - แจ้งเตือนซ้ำจนกว่าจะกรอกข้อมูล
+// type: 'today' = เช็ควันนี้, 'yesterday' = เช็คเมื่อวาน
 const REMINDER_TIMES = [
-  { hour: 18, minute: 30 },
-  { hour: 19, minute: 0 },
-  { hour: 20, minute: 0 },
-  { hour: 21, minute: 0 },
-  { hour: 22, minute: 0 },
-  { hour: 23, minute: 0 },
-  { hour: 0,  minute: 0 },
+  { hour: 10, minute: 0,  type: 'yesterday' },  // 10:00 แจ้งเตือนคนที่ยังไม่กรอกเมื่อวาน
+  { hour: 18, minute: 30, type: 'today' },
+  { hour: 19, minute: 0,  type: 'today' },
+  { hour: 20, minute: 0,  type: 'today' },
+  { hour: 21, minute: 0,  type: 'today' },
+  { hour: 22, minute: 0,  type: 'today' },
+  { hour: 23, minute: 0,  type: 'today' },       // 5 ทุ่ม = รอบสุดท้ายของวันนี้
 ];
 
 // ==================== GOOGLE SHEETS AUTH ====================
@@ -275,6 +287,7 @@ ${messageText}
     - ⚠️ "ทั้งวัน" / "เต็มวัน" / "full day" = 8.5 ชม. (เวลาทำงาน 1 วันของบริษัท)
     - ⚠️ "ครึ่ง" ให้ใช้ .5 เสมอ เช่น "1 ชั่วโมงครึ่ง" = 1.5, "2 ชม.ครึ่ง" = 2.5, "ครึ่งวัน" = 4.25
     - ⚠️ format Hour เป็นตัวเลขเท่านั้น ไม่ต้องมีหน่วย เช่น "3 ชม." → "3", "1 ชั่วโมงครึ่ง" → "1.5", "ทั้งวัน" → "8.5" ห้ามใช้ 1.30 หรือ 1:30
+    - ⚠️ ถ้าบรรทัดไหนไม่ได้ระบุชั่วโมงชัดเจน แต่สื่อความหมายว่า "เวลาที่เหลือของวัน" (เช่น "ที่เหลือ", "นอกนั้น", "เวลาที่เหลือ", "ช่วงที่เหลือ", "the rest" ฯลฯ) → ให้คำนวณจาก 8.5 ชม. (เวลาทำงานต่อวัน) ลบชั่วโมงที่ระบุไปแล้วในข้อความเดียวกัน เช่น ถ้ามี 2 + 5 = 7 ชม. → ที่เหลือ = 8.5 - 7 = 1.5
 10. ถ้าบรรทัดมีเวลานำหน้า เช่น "09:00 Assign งาน" ให้แยกเวลาใส่คอลัมน์ Time และเอาส่วนที่เหลือใส่ Detail
 11. ⚠️ วันที่: ถ้าไม่ได้ระบุวันที่ → ใช้วันที่วันนี้, ถ้าระบุวันที่มาด้วย → ใช้วันที่ที่ระบุ
     - รองรับหลายรูปแบบ: "เมื่อวาน", "วานนี้", "yesterday" → ใช้วันที่เมื่อวาน
@@ -839,22 +852,17 @@ async function getRegisteredUsers() {
   }
 }
 
-// เช็คว่าใครยังไม่กรอกข้อมูลวันนี้
-async function checkMissingUsers() {
+// เช็คว่าใครยังไม่กรอกข้อมูล (รับ targetDate เพื่อเช็ควันไหนก็ได้)
+async function checkMissingUsers(targetDate = new Date()) {
   const headers = await getHeaders();
   if (headers.length === 0) return;
 
   const users = await getRegisteredUsers();
   if (users.length === 0) return;
 
-  // อ่านข้อมูลทั้งหมดจาก Sheet1
   const data = await readSheet();
-  if (data.length <= 1) {
-    // มีแค่ header = ยังไม่มีใครกรอกเลย
-    return users;
-  }
+  if (data.length <= 1) return users;
 
-  // หา index ของคอลัมน์ วันที่ และ ชื่อ
   const dateColIdx = headers.findIndex(h => h.toLowerCase().includes('dd') || h.toLowerCase().includes('date') || h.includes('/'));
   const nameColIdx = headers.findIndex(h => h.toLowerCase() === 'name' || h.toLowerCase().includes('name'));
 
@@ -863,54 +871,64 @@ async function checkMissingUsers() {
     return [];
   }
 
-  // วันนี้ - normalize เป็น d/m/yyyy (ไม่มี 0 นำหน้า) เพื่อเปรียบเทียบ
-  const now = new Date();
-  const todayDay = now.getDate();
-  const todayMonth = now.getMonth() + 1;
-  const todayYearAD = now.getFullYear();
-  const todayYearBE = todayYearAD + 543;
+  const day = targetDate.getDate();
+  const month = targetDate.getMonth() + 1;
+  const yearAD = targetDate.getFullYear();
+  const yearBE = yearAD + 543;
 
-  // ฟังก์ชัน normalize วันที่ให้เป็น d/m format (ลบ 0 นำหน้า)
   function normalizeDate(dateStr) {
     const parts = dateStr.split('/');
     if (parts.length < 3) return dateStr;
-    const d = parseInt(parts[0]);
-    const m = parseInt(parts[1]);
-    const y = parseInt(parts[2]);
-    return `${d}/${m}/${y}`;
+    return `${parseInt(parts[0])}/${parseInt(parts[1])}/${parseInt(parts[2])}`;
   }
 
-  const todayAD = `${todayDay}/${todayMonth}/${todayYearAD}`;
-  const todayBE = `${todayDay}/${todayMonth}/${todayYearBE}`;
+  const checkAD = `${day}/${month}/${yearAD}`;
+  const checkBE = `${day}/${month}/${yearBE}`;
 
-  // หาว่าใครกรอกวันนี้แล้ว
   const filledNames = new Set();
   for (let i = 1; i < data.length; i++) {
     const rowDate = normalizeDate((data[i][dateColIdx] || '').trim());
     const rowName = (data[i][nameColIdx] || '').trim();
-    if (rowDate === todayAD || rowDate === todayBE) {
+    if (rowDate === checkAD || rowDate === checkBE) {
       filledNames.add(rowName.toLowerCase());
     }
   }
 
-  // หาคนที่ยังไม่กรอก
   return users.filter(u => !filledNames.has(u.name.toLowerCase()));
 }
 
 // ส่งแจ้งเตือนใน Discord
-async function sendReminder() {
-  const missing = await checkMissingUsers();
-  if (!missing || missing.length === 0) {
-    console.log('✅ ทุกคนกรอกข้อมูลครบแล้ววันนี้');
-    return;
-  }
+async function sendReminder(type = 'today') {
+  // ถ้าเป็นวันหยุด → ไม่แจ้งเตือน
+  if (type === 'today' && isHoliday()) return;
+  if (type === 'yesterday' && isHoliday(new Date(Date.now() - 86400000))) return;
 
   const channel = client.channels.cache.get(CHANNEL_ID);
   if (!channel) return;
 
-  const mentions = missing.map(u => `<@${u.discordId}>`).join(' ');
-  await channel.send(`⏰ อย่าลืมกรอกข้อมูลวันนี้นะค้าบบบ:\n${mentions}`);
-  console.log(`⏰ แจ้งเตือน ${missing.length} คน`);
+  if (type === 'yesterday') {
+    // เช็คเมื่อวาน
+    const yesterday = new Date(Date.now() - 86400000);
+    const missing = await checkMissingUsers(yesterday);
+    if (!missing || missing.length === 0) {
+      console.log('✅ ทุกคนกรอกข้อมูลเมื่อวานครบแล้ว');
+      return;
+    }
+    const dateStr = `${yesterday.getDate()}/${yesterday.getMonth() + 1}/${yesterday.getFullYear()}`;
+    const mentions = missing.map(u => `<@${u.discordId}>`).join(' ');
+    await channel.send(`⏰ ยังไม่ได้กรอกข้อมูลของวันที่ ${dateStr}:\n${mentions}\nกรุณากรอกย้อนหลังด้วยนะครับ!`);
+    console.log(`⏰ แจ้งเตือนเมื่อวาน ${missing.length} คน`);
+  } else {
+    // เช็ควันนี้
+    const missing = await checkMissingUsers();
+    if (!missing || missing.length === 0) {
+      console.log('✅ ทุกคนกรอกข้อมูลครบแล้ววันนี้');
+      return;
+    }
+    const mentions = missing.map(u => `<@${u.discordId}>`).join(' ');
+    await channel.send(`⏰ อย่าลืมกรอกข้อมูลวันนี้นะค้าบบบ:\n${mentions}`);
+    console.log(`⏰ แจ้งเตือนวันนี้ ${missing.length} คน`);
+  }
 }
 
 // ตั้งเวลาเช็คทุก 10 วินาที ถ้าถึงเวลาที่กำหนดก็แจ้งเตือน
@@ -932,9 +950,50 @@ setInterval(() => {
       const key = `${time.hour}:${time.minute}`;
       if (!reminderSentFlags.has(key)) {
         reminderSentFlags.add(key);
-        sendReminder();
+        sendReminder(time.type || 'today');
       }
     }
+  }
+}, 10 * 1000);
+
+// ==================== MORNING MESSAGE ====================
+
+// ให้ AI สร้างข้อความให้กำลังใจตอนเช้า
+async function generateMorningMessage() {
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: `สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
+- ใช้ภาษาไทย สบายๆ เป็นกันเอง
+- ใส่ emoji ได้
+- ห้ามซ้ำกับคำว่า "สู้ๆ" ตรงๆ ให้หลากหลาย
+- อาจเป็นมุกตลก คำคม หรือให้กำลังใจ สลับกันไป
+- ตอบแค่ข้อความเท่านั้น ไม่ต้องอธิบาย` }],
+    });
+    return res.choices[0].message.content.trim();
+  } catch (err) {
+    console.error('❌ สร้างข้อความเช้าไม่ได้:', err.message);
+    return '☀️ เช้าวันใหม่ ขอให้ทุกคนมีวันที่ดีนะครับ!';
+  }
+}
+
+// ส่งข้อความให้กำลังใจตอนเช้า
+let morningSentToday = false;
+setInterval(async () => {
+  const now = new Date();
+  if (now.getHours() === 9 && now.getMinutes() === 0) {
+    if (!morningSentToday && !isHoliday()) {
+      morningSentToday = true;
+      const channel = client.channels.cache.get(CHANNEL_ID);
+      if (channel) {
+        const msg = await generateMorningMessage();
+        await channel.send(msg);
+        console.log('☀️ ส่งข้อความเช้า:', msg);
+      }
+    }
+  }
+  if (now.getHours() === 0 && now.getMinutes() === 1) {
+    morningSentToday = false;
   }
 }, 10 * 1000);
 
