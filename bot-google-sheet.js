@@ -959,43 +959,43 @@ setInterval(() => {
 // ==================== MORNING MESSAGE ====================
 
 // ให้ AI สร้างข้อความให้กำลังใจตอนเช้า
-async function generateMorningMessage() {
-  try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: `สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
-- ใช้ภาษาไทย สบายๆ เป็นกันเอง
-- ใส่ emoji ได้
-- ห้ามซ้ำกับคำว่า "สู้ๆ" ตรงๆ ให้หลากหลาย
-- อาจเป็นมุกตลก คำคม หรือให้กำลังใจ สลับกันไป
-- ตอบแค่ข้อความเท่านั้น ไม่ต้องอธิบาย` }],
-    });
-    return res.choices[0].message.content.trim();
-  } catch (err) {
-    console.error('❌ สร้างข้อความเช้าไม่ได้:', err.message);
-    return '☀️ เช้าวันใหม่ ขอให้ทุกคนมีวันที่ดีนะครับ!';
-  }
-}
+// async function generateMorningMessage() {
+//   try {
+//     const res = await openai.chat.completions.create({
+//       model: 'gpt-4o-mini',
+//       messages: [{ role: 'user', content: `สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
+// - ใช้ภาษาไทย สบายๆ เป็นกันเอง
+// - ใส่ emoji ได้
+// - ห้ามซ้ำกับคำว่า "สู้ๆ" ตรงๆ ให้หลากหลาย
+// - อาจเป็นมุกตลก คำคม หรือให้กำลังใจ สลับกันไป
+// - ตอบแค่ข้อความเท่านั้น ไม่ต้องอธิบาย` }],
+//     });
+//     return res.choices[0].message.content.trim();
+//   } catch (err) {
+//     console.error('❌ สร้างข้อความเช้าไม่ได้:', err.message);
+//     return '☀️ เช้าวันใหม่ ขอให้ทุกคนมีวันที่ดีนะครับ!';
+//   }
+// }
 
 // ส่งข้อความให้กำลังใจตอนเช้า
-let morningSentToday = false;
-setInterval(async () => {
-  const now = new Date();
-  if (now.getHours() === 9 && now.getMinutes() === 0) {
-    if (!morningSentToday && !isHoliday()) {
-      morningSentToday = true;
-      const channel = client.channels.cache.get(CHANNEL_ID);
-      if (channel) {
-        const msg = await generateMorningMessage();
-        await channel.send(msg);
-        console.log('☀️ ส่งข้อความเช้า:', msg);
-      }
-    }
-  }
-  if (now.getHours() === 0 && now.getMinutes() === 1) {
-    morningSentToday = false;
-  }
-}, 10 * 1000);
+// let morningSentToday = false;
+// setInterval(async () => {
+//   const now = new Date();
+//   if (now.getHours() === 9 && now.getMinutes() === 0) {
+//     if (!morningSentToday && !isHoliday()) {
+//       morningSentToday = true;
+//       const channel = client.channels.cache.get(CHANNEL_ID);
+//       if (channel) {
+//         const msg = await generateMorningMessage();
+//         await channel.send(msg);
+//         console.log('☀️ ส่งข้อความเช้า:', msg);
+//       }
+//     }
+//   }
+//   if (now.getHours() === 0 && now.getMinutes() === 1) {
+//     morningSentToday = false;
+//   }
+// }, 10 * 1000);
 
 // ==================== START BOT ====================
 
