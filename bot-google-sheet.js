@@ -19,6 +19,16 @@ function isHoliday(date = new Date()) {
   return holidays.some(h => h.day === d && h.month === m);
 }
 
+// หา "วันทำงานล่าสุด" ย้อนหลังจากวันที่ระบุ (ข้ามเสาร์-อาทิตย์ + วันหยุด)
+function getLastWorkingDay(from = new Date()) {
+  const d = new Date(from);
+  d.setDate(d.getDate() - 1);
+  while (isHoliday(d)) {
+    d.setDate(d.getDate() - 1);
+  }
+  return d;
+}
+
 // ==================== CONFIG ====================
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -901,25 +911,24 @@ async function checkMissingUsers(targetDate = new Date()) {
 
 // ส่งแจ้งเตือนใน Discord
 async function sendReminder(type = 'today') {
-  // ถ้าเป็นวันหยุด → ไม่แจ้งเตือน
-  if (type === 'today' && isHoliday()) return;
-  if (type === 'yesterday' && isHoliday(new Date(Date.now() - 86400000))) return;
+  // ถ้าวันนี้เป็นวันหยุด → ไม่แจ้งเตือนอะไรเลย (รวมการแจ้งเตือนย้อนหลังด้วย)
+  if (isHoliday()) return;
 
   const channel = client.channels.cache.get(CHANNEL_ID);
   if (!channel) return;
 
   if (type === 'yesterday') {
-    // เช็คเมื่อวาน
-    const yesterday = new Date(Date.now() - 86400000);
-    const missing = await checkMissingUsers(yesterday);
+    // หาวันทำงานล่าสุด (จันทร์ → ศุกร์, พุธหลังหยุด → อังคาร ฯลฯ)
+    const lastWorkingDay = getLastWorkingDay();
+    const missing = await checkMissingUsers(lastWorkingDay);
     if (!missing || missing.length === 0) {
-      console.log('✅ ทุกคนกรอกข้อมูลเมื่อวานครบแล้ว');
+      console.log('✅ ทุกคนกรอกข้อมูลวันทำงานล่าสุดครบแล้ว');
       return;
     }
-    const dateStr = `${yesterday.getDate()}/${yesterday.getMonth() + 1}/${yesterday.getFullYear()}`;
+    const dateStr = `${lastWorkingDay.getDate()}/${lastWorkingDay.getMonth() + 1}/${lastWorkingDay.getFullYear()}`;
     const mentions = missing.map(u => `<@${u.discordId}>`).join(' ');
     await channel.send(`⏰ ยังไม่ได้กรอกข้อมูลของวันที่ ${dateStr}:\n${mentions}\nกรุณากรอกย้อนหลังด้วยนะครับ!`);
-    console.log(`⏰ แจ้งเตือนเมื่อวาน ${missing.length} คน`);
+    console.log(`⏰ แจ้งเตือนย้อนหลัง (${dateStr}) ${missing.length} คน`);
   } else {
     // เช็ควันนี้
     const missing = await checkMissingUsers();
