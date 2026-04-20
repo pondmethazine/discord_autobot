@@ -1,7 +1,7 @@
 require('dotenv').config();
 process.env.TZ = 'Asia/Bangkok';
 
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { google } = require('googleapis');
 const OpenAI = require('openai');
 const XLSX = require('xlsx');
@@ -57,6 +57,10 @@ const CHANNEL_ID = '1488904036999499910';
 
 // DM Control Map (userId → channelId)
 const dmControlMap = new Map();
+
+// เก็บข้อมูลข้อความที่รอการตัดสินใจ (export หรือ timesheet)
+// key = messageId, value = { message, mentionedUsers, content }
+const pendingExportChoice = new Map();
 
 // Reminder Config
 const USERS_SHEET = 'Users';       // ชื่อ Sheet ที่เก็บรายชื่อ
@@ -293,6 +297,10 @@ ${messageText}
 7. ⚠️ สำคัญมาก: แยกข้อมูลออกจากกันให้ชัดเจน เช่น "ประชุม cfarm 3 ชม." → Detail="ประชุม", Hour="3 ชม.", Project="Cfarm" ห้ามเอาชั่วโมงหรือชื่อ project ไปรวมใน Detail
 8. ⚠️ สำคัญ: ถ้าบรรทัดไหนไม่ได้พูดถึง project → ใส่ "" เท่านั้น ห้ามเดาหรือใส่ project เอง เช่น "เดินทาง 2 ชม." ไม่ได้พูดถึง project → Project=""
 9. ⚠️ ถ้ามีบรรทัด "Project Cfarm" แยกไว้ท้ายสุด → ใช้ project นั้นกับทุกบรรทัดข้างบนที่ยังไม่มี project กำกับ ห้ามสร้าง row ใหม่สำหรับบรรทัด project (ใช้เฉพาะเมื่อมีบรรทัด Project แยกชัดเจน)
+9.1 ⚠️ ถ้าบรรทัดเดียวมี project หลายอัน เช่น "เรียนทำฟอร์ม MSIG + SDA 8 ชั่วโมง" → แยกเป็นหลาย row ตามจำนวน project (1 project = 1 row)
+    - Detail เดียวกันทุก row (เช่น "เรียนทำฟอร์ม" ทั้งคู่)
+    - ชั่วโมงหารเท่าๆ กันตามจำนวน project เช่น 8 ชม. / 2 project = 4 ชม. ต่อ row
+    - ตัวอย่าง: "เรียนทำฟอร์ม MSIG + SDA 8 ชม." → [{Detail:"เรียนทำฟอร์ม", Hour:"4", Project:"MSIG"}, {Detail:"เรียนทำฟอร์ม", Hour:"4", Project:"SDA"}]
 10. ⚠️ Hour: ใส่เฉพาะเมื่อระบุชั่วโมง/นาทีชัดเจน เช่น "3 ชม.", "30 นาที" ถ้าเป็นหน่วยอื่น เช่น "5 รอบ" ไม่ใช่ชั่วโมง → ให้เอาไว้ใน Detail แทน
     - ⚠️ "ทั้งวัน" / "เต็มวัน" / "full day" = 8.5 ชม. (เวลาทำงาน 1 วันของบริษัท)
     - ⚠️ "ครึ่ง" ให้ใช้ .5 เสมอ เช่น "1 ชั่วโมงครึ่ง" = 1.5, "2 ชม.ครึ่ง" = 2.5, "ครึ่งวัน" = 4.25
@@ -435,7 +443,8 @@ async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers) {
 }
 
 กฎ:
-- ⚠️ ถ้าข้อความดูเหมือนเป็นการลง timesheet (มีชั่วโมง เช่น "2 ชม.", มีชื่องาน, มี project, มีคำว่า "ลา") → action=timesheet (จะปล่อยให้ระบบลง timesheet ปกติ)
+- ⚠️ ถ้าข้อความดูเหมือนเป็นการลง timesheet (มีชั่วโมง เช่น "2 ชม.", มีชื่องาน, มี project) → action=timesheet (จะปล่อยให้ระบบลง timesheet ปกติ)
+- ⚠️ ถ้าข้อความขึ้นต้นหรือมีคำว่า "ลา" เช่น "ลาพักร้อน", "ลาป่วย", "ลากิจ", "ลางาน", "ลาครึ่งวัน" → action=timesheet เสมอ (เป็นการลง timesheet ว่าลางาน)
 - ถ้าเป็นการเหน็บแนม/บ่น/ทวงคนลง timesheet → action=reply ตอบสนับสนุนกวนๆ เสริมดราม่า
 - ถ้ามี keyword คำขอ/ขอให้ช่วย/สั่งงาน/คำถามที่จริงจัง หรือ mention พร้อมคำขอ → action=notify_admin
 - ถ้าเป็น owner แล้วมีข้อความที่ไม่แน่ใจว่าควรตอบยังไง → action=notify_admin
@@ -543,15 +552,16 @@ async function exportSheet(filters, message) {
   const filePath = path.join(__dirname, fileName);
   XLSX.writeFile(wb, filePath);
 
-  // ส่งไฟล์กลับ Discord
-  await message.reply({
+  // ส่งไฟล์ทาง DM ให้คนขอ (ไม่โชว์ในแชนแนล)
+  await message.author.send({
     content: `📊 สรุปข้อมูล ${filtered.length} รายการ`,
     files: [{ attachment: filePath, name: fileName }],
   });
+  await message.react('📨');
 
   // ลบไฟล์ temp
   fs.unlinkSync(filePath);
-  console.log(`📊 Export ${filtered.length} รายการ`);
+  console.log(`📊 Export ${filtered.length} รายการ → DM ${message.author.username}`);
 }
 
 // Export แยกคนละไฟล์
@@ -646,10 +656,12 @@ async function exportSheetPerPerson(filters, message) {
     return;
   }
 
-  await message.reply({
+  // ส่งทาง DM
+  await message.author.send({
     content: `📊 สรุปข้อมูลแยกรายคน ${files.length} ไฟล์`,
     files,
   });
+  await message.react('📨');
 
   // ลบไฟล์ temp
   tempPaths.forEach(p => fs.unlinkSync(p));
@@ -820,25 +832,33 @@ client.on('messageCreate', async (message) => {
   const cleanContent = message.content.replace(/<@!?\d+>/g, '').trim();
   const mentionedUsers = [...message.mentions.users.values()];
 
-  // ถ้าไม่มีคำสั่ง export ชัดเจน (สรุป, export, ดึงข้อมูล, timesheet) → ไม่ต้องถาม AI ให้ลงข้อมูลเลย
+  // ถ้า admin/owner พิมพ์ข้อความที่มี keyword ของ export → ถามก่อนว่าจะ export หรือลง timesheet
+  const canExport = message.author.id === ADMIN_ID || message.author.id === OWNER_ID;
   const exportKeywords = /สรุป|export|ดึงข้อมูล|timesheet|รายงาน|report/i;
-  let intent = { intent: 'data' };
-  if (exportKeywords.test(cleanContent)) {
-    intent = await aiDetectIntent(message.content, mentionedUsers);
-  }
-  console.log('🧠 Intent:', JSON.stringify(intent));
 
-  // ถ้าเป็น export
-  if (intent.intent === 'export') {
-    // ถ้า mention user มา ใช้ username ของทุกคนที่ถูก mention
-    if (mentionedUsers.length > 0) {
-      intent.filters.names = mentionedUsers.map(u => u.username);
-    }
-    if (intent.split_per_person && (intent.filters.names?.length > 1)) {
-      await exportSheetPerPerson(intent.filters, message);
-    } else {
-      await exportSheet(intent.filters, message);
-    }
+  if (canExport && exportKeywords.test(cleanContent)) {
+    // เก็บข้อมูลไว้ใน pendingExportChoice
+    pendingExportChoice.set(message.id, { message, mentionedUsers });
+
+    // สร้างปุ่มให้เลือก
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`choice_export_${message.id}`)
+        .setLabel('📊 ออก Report')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`choice_timesheet_${message.id}`)
+        .setLabel('📝 ลง Timesheet')
+        .setStyle(ButtonStyle.Secondary),
+    );
+
+    await message.reply({
+      content: '🤔 ต้องการออก report หรือลง timesheet?',
+      components: [row],
+    });
+
+    // เคลียร์ pending หลัง 5 นาที (กันข้อมูลค้าง)
+    setTimeout(() => pendingExportChoice.delete(message.id), 5 * 60 * 1000);
     return;
   }
 
@@ -1101,5 +1121,69 @@ setInterval(() => {
 // }, 10 * 1000);
 
 // ==================== START BOT ====================
+
+// ==================== BUTTON INTERACTION ====================
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  if (!interaction.customId.startsWith('choice_')) return;
+
+  // แยก action และ messageId
+  const [, action, originalMessageId] = interaction.customId.split('_');
+  const pending = pendingExportChoice.get(originalMessageId);
+
+  if (!pending) {
+    await interaction.reply({ content: '⏰ หมดเวลา หรือเคยเลือกไปแล้ว', ephemeral: true });
+    return;
+  }
+
+  // จำกัดให้คนเดิมที่ขอเท่านั้นถึงจะกดได้
+  if (interaction.user.id !== pending.message.author.id) {
+    await interaction.reply({ content: '❌ เฉพาะคนที่พิมพ์คำสั่งเท่านั้นที่กดได้', ephemeral: true });
+    return;
+  }
+
+  const { message, mentionedUsers } = pending;
+  pendingExportChoice.delete(originalMessageId);
+
+  if (action === 'export') {
+    await interaction.update({ content: '📊 กำลังออก report...', components: [] });
+
+    // วิเคราะห์ intent ด้วย AI เพื่อดึง filters
+    const intent = await aiDetectIntent(message.content, mentionedUsers);
+    if (mentionedUsers.length > 0) {
+      intent.filters = intent.filters || {};
+      intent.filters.names = mentionedUsers.map(u => u.username);
+    }
+    if (intent.split_per_person && intent.filters?.names?.length > 1) {
+      await exportSheetPerPerson(intent.filters, message);
+    } else {
+      await exportSheet(intent.filters || {}, message);
+    }
+  } else if (action === 'timesheet') {
+    await interaction.update({ content: '📝 กำลังลง timesheet...', components: [] });
+
+    // ลง timesheet ตามปกติ
+    const headers = await getHeaders();
+    if (headers.length === 0) return;
+    const dropdowns = await getDropdownValues();
+    const aiRows = await aiMapToColumns(headers, message.author.username, message.content, dropdowns);
+    if (!aiRows || aiRows.length === 0) {
+      await message.react('❌');
+      return;
+    }
+    let allSuccess = true;
+    for (const aiResult of aiRows) {
+      const row = mapToRow(headers, aiResult);
+      const rowNumber = await appendToSheet(headers, [row]);
+      if (rowNumber) {
+        await saveMessageId(rowNumber, message.id);
+      } else {
+        allSuccess = false;
+      }
+    }
+    await message.react(allSuccess ? '✅' : '❌');
+  }
+});
 
 client.login(DISCORD_TOKEN);
