@@ -299,6 +299,7 @@ ${messageText}
     - ⚠️ format Hour เป็นตัวเลขเท่านั้น ไม่ต้องมีหน่วย เช่น "3 ชม." → "3", "1 ชั่วโมงครึ่ง" → "1.5", "ทั้งวัน" → "8.5" ห้ามใช้ 1.30 หรือ 1:30
     - ⚠️ ถ้าระบุเป็นนาที → แปลงเป็นชั่วโมงทศนิยม (หาร 60) เช่น "30 นาที" → "0.5", "15 นาที" → "0.25", "45 นาที" → "0.75", "10 นาที" → "0.17"
     - ⚠️ ถ้าผสมกัน → บวกเข้าด้วยกัน เช่น "1 ชม. 30 นาที" → "1.5", "2 ชม. 15 นาที" → "2.25", "3 ชม. 45 นาที" → "3.75"
+    - ⚠️ ถ้าผู้ใช้ระบุว่า "ลา" (ลาป่วย, ลากิจ, ลาพักร้อน, ลางาน, ไม่ว่าเหตุผลอะไร) → Hour = "ลา" (ไม่ใช่ตัวเลข) และ Detail ใส่เหตุผลการลา เช่น "ลาป่วย" → Detail="ลาป่วย", Hour="ลา"
     - ⚠️ ถ้าบรรทัดไหนไม่ได้ระบุชั่วโมงชัดเจน แต่สื่อความหมายว่า "เวลาที่เหลือของวัน" (เช่น "ที่เหลือ", "นอกนั้น", "เวลาที่เหลือ", "ช่วงที่เหลือ", "the rest" ฯลฯ) → ให้คำนวณจาก 8.5 ชม. (เวลาทำงานต่อวัน) ลบชั่วโมงที่ระบุไปแล้วในข้อความเดียวกัน เช่น ถ้ามี 2 + 5 = 7 ชม. → ที่เหลือ = 8.5 - 7 = 1.5
 10. ถ้าบรรทัดมีเวลานำหน้า เช่น "09:00 Assign งาน" ให้แยกเวลาใส่คอลัมน์ Time และเอาส่วนที่เหลือใส่ Detail
 11. ⚠️ วันที่: ถ้าไม่ได้ระบุวันที่ → ใช้วันที่วันนี้, ถ้าระบุวันที่มาด้วย → ใช้วันที่ที่ระบุ
@@ -412,6 +413,45 @@ async function aiDetectIntent(messageText, mentionedUsers) {
   } catch (err) {
     console.error('❌ AI detect intent ไม่ได้:', err.message);
     return { intent: 'data' };
+  }
+}
+
+// ==================== SUPPORT OWNER / SUPPORT BOT ====================
+
+// AI วิเคราะห์ข้อความจาก owner / support bot แล้วตอบกลับหรือแจ้ง admin
+async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers) {
+  const prompt = `คุณเป็น bot ที่คอยช่วย support ${authorRole} ในแชนแนล Discord ของบริษัท
+โดยเน้นให้บรรยากาศสนุกๆ กวนๆ ไม่ต้องสุภาพ
+ในแชนแนลนี้ทุกคนจะลง timesheet กัน บางทีคนในแชนแนลจะเหน็บแนมคนที่ยังไม่ลง
+
+ข้อความที่ได้รับจาก ${authorRole}: "${messageText}"
+คนที่ถูก mention: ${mentionedUsers.length > 0 ? mentionedUsers.map(u => u.username).join(', ') : 'ไม่มี'}
+
+วิเคราะห์แล้วตอบเป็น JSON:
+{
+  "action": "timesheet" | "reply" | "notify_admin" | "ignore",
+  "reply_text": "ข้อความตอบกลับ (ถ้า action=reply) ตอบแบบกวนๆ ไม่สุภาพ สั้นๆ มีอารมณ์ขัน",
+  "notify_reason": "เหตุผลที่แจ้ง admin (ถ้า action=notify_admin)"
+}
+
+กฎ:
+- ⚠️ ถ้าข้อความดูเหมือนเป็นการลง timesheet (มีชั่วโมง เช่น "2 ชม.", มีชื่องาน, มี project, มีคำว่า "ลา") → action=timesheet (จะปล่อยให้ระบบลง timesheet ปกติ)
+- ถ้าเป็นการเหน็บแนม/บ่น/ทวงคนลง timesheet → action=reply ตอบสนับสนุนกวนๆ เสริมดราม่า
+- ถ้ามี keyword คำขอ/ขอให้ช่วย/สั่งงาน/คำถามที่จริงจัง หรือ mention พร้อมคำขอ → action=notify_admin
+- ถ้าเป็น owner แล้วมีข้อความที่ไม่แน่ใจว่าควรตอบยังไง → action=notify_admin
+- ถ้าเป็นเรื่องทั่วไปที่ไม่ต้องตอบ → action=ignore
+- reply_text: ใช้ภาษาวัยรุ่น สั้นๆ ไม่สุภาพ อาจมี emoji ได้`;
+
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+    });
+    return JSON.parse(res.choices[0].message.content);
+  } catch (err) {
+    console.error('❌ AI วิเคราะห์ owner message ไม่ได้:', err.message);
+    return { action: 'ignore' };
   }
 }
 
@@ -711,6 +751,58 @@ client.on('messageCreate', async (message) => {
   }
 
   if (message.channel.id !== CHANNEL_ID) return;
+
+  // ==================== SUPPORT OWNER / SUPPORT BOT / FAT GUY ====================
+  const OWNER_ID = '1131175352018944050';
+  const SUPPORT_BOT_ID = '1480443439706275922';
+  const FAT_GUY_ID = '1369270229481422908';
+  if (message.author.id === OWNER_ID || message.author.id === SUPPORT_BOT_ID) {
+    const role = message.author.id === OWNER_ID ? 'owner ของ server' : 'bot แจ้งเตือน timesheet';
+    const mentionedUsers = [...message.mentions.users.values()];
+    const result = await aiAnalyzeOwnerMessage(message.content, role, mentionedUsers);
+    console.log(`🎯 Owner/SupportBot analysis:`, result);
+
+    if (result.action === 'timesheet') {
+      // ปล่อยให้ระบบปกติลง timesheet ต่อ
+    } else {
+      if (result.action === 'reply' && result.reply_text) {
+        await message.reply(result.reply_text);
+      } else if (result.action === 'notify_admin') {
+        try {
+          const admin = await client.users.fetch(ADMIN_ID);
+          await admin.send(`📬 มีคำขอ/คำถามจาก ${message.author.username}\n💬 "${message.content}"\n🤔 ${result.notify_reason || ''}\n🔗 ${message.url}`);
+        } catch (e) {}
+      }
+      return; // ไม่บันทึกลง Sheet
+    }
+  }
+
+  // ==================== FAT GUY: ตอบทุกข้อความด้วยคำว่า "อ้วน" ====================
+  if (message.author.id === FAT_GUY_ID) {
+    try {
+      const prompt = `ผู้ใช้พิมพ์ข้อความ: "${message.content}"
+
+งานของคุณ: ตอบกลับข้อความนี้ 1 ประโยค
+- ถ้าดูเหมือนเป็นการลง timesheet → ตอบชมหรือรับทราบกวนๆ
+- ถ้าไม่ใช่ timesheet → ตอบกลับแบบไม่สุภาพ กวนๆ
+- ⚠️ ต้องลงท้ายด้วยคำที่เกี่ยวกับ "อ้วน" เสมอ เช่น "อ้วน", "อ้วง", "ไอ้อ้วน", "ไอ้อ้วง", "เจ้าอ้วน"
+- ตอบสั้นๆ 1 ประโยค ไม่ต้องอธิบาย`;
+
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const reply = res.choices[0].message.content.trim();
+      await message.reply(reply);
+    } catch (err) {
+      console.error('❌ Fat guy reply ไม่ได้:', err.message);
+    }
+
+    // ถ้าดูเหมือน timesheet → ปล่อยผ่านให้ระบบลง Sheet
+    // ถ้าไม่ใช่ → return ไม่ต้องลง Sheet
+    const looksLikeTimesheet = /ชม\.|ชั่วโมง|นาที|ทั้งวัน|ครึ่งวัน|ลา|ประชุม|เดินทาง|onsite/i.test(message.content);
+    if (!looksLikeTimesheet) return;
+  }
 
   // ==================== ตรวจจับคำว่า "อ้วน" ====================
   if (message.content.match(/อ้วน|อ้วง/i)) {
