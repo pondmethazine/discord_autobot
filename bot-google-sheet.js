@@ -478,16 +478,25 @@ async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers) {
 
 ⚠️ กฎสำคัญ: ต้องวิเคราะห์ให้ละเอียดดีๆ ว่าข้อความนั้นพูดถึงเรื่องอะไร อย่า reply มั่วๆ
 
-กฎ:
-- ⚠️ ถ้าข้อความดูเหมือนเป็นการลง timesheet (มีชั่วโมง เช่น "2 ชม.", มีชื่องาน, มี project) → action=timesheet (จะปล่อยให้ระบบลง timesheet ปกติ)
-- ⚠️ ถ้าข้อความขึ้นต้นหรือมีคำว่า "ลา" เช่น "ลาพักร้อน", "ลาป่วย", "ลากิจ", "ลางาน", "ลาครึ่งวัน" → action=timesheet เสมอ (เป็นการลง timesheet ว่าลางาน)
-- ⚠️ ถ้าเป็นการเหน็บแนม/ทวง/บ่นคนที่ยังไม่ลง timesheet → action=reply สนับสนุนกวนๆ เสริมดราม่า
-- ⚠️ ถ้าเป็น owner แล้วคุยเล่น/ทักทาย/พูดเรื่องทั่วไปที่ไม่ใช่คำขอจริงจัง → action=reply ตอบกลับสนุกๆ เป็นกันเอง สั้นๆ
+⚠️⚠️⚠️ กฎลำดับที่ 1 (ต้องเช็คก่อนเสมอ):
+ถ้าข้อความมี pattern ของการลง timesheet → action=timesheet ทันที ห้ามตอบ reply หรือ ignore
+Pattern ที่ชัดเจน:
+- มีตัวเลข + หน่วยเวลา เช่น "8 ชม.", "2 ชม", "30 นาที", "3 hr", "1 ชั่วโมง" → timesheet
+- "ทั้งวัน", "ครึ่งวัน", "full day" → timesheet
+- "ลาพักร้อน", "ลาป่วย", "ลากิจ", "ลางาน" → timesheet
+- ชื่องาน + เวลา เช่น "ประชุม 8 ชม.", "onsite 3 ชม.", "เรียน Netsuite 8 ชม." → timesheet
+
+ตัวอย่าง (ต้อง action=timesheet ทุกเคส):
+- "ประชุม 8 ชม." → timesheet ✅ (ห้าม reply!)
+- "onsite 5 ชม." → timesheet ✅
+- "ลาพักร้อน" → timesheet ✅
+
+กฎอื่นๆ:
+- ⚠️ ถ้าเป็น owner แล้ว mention คนอื่น (มีคนถูก mention ในข้อความ) → action=reply ตอบกลับกวนๆ สนับสนุนสิ่งที่ owner พูดถึง เสริมดราม่าโดยใช้ข้อมูลที่ owner พูด
+- ⚠️ ถ้าเป็น owner แล้วไม่ได้ mention ใคร (เช่น คุยเล่น, ทักทาย, บ่น, พูดเรื่องทั่วไป) → action=notify_admin เสมอ (ส่งไป admin วิเคราะห์)
+- ⚠️ ถ้าเป็นการเหน็บแนม/ทวง/บ่นคนที่ยังไม่ลง timesheet (จาก support bot) → action=reply สนับสนุนกวนๆ เสริมดราม่า
 - ⚠️ ถ้าเป็น support bot พิมพ์เรื่องทั่วไปที่ไม่เกี่ยว timesheet → action=ignore (ไม่ต้องตอบ bot อีกตัว)
-- ถ้ามี keyword คำขอ/ขอให้ช่วย/สั่งงาน/คำถามที่จริงจัง หรือ mention พร้อมคำขอ → action=notify_admin
-- ถ้าเป็น owner แล้วมีข้อความจริงจังที่ไม่แน่ใจว่าควรตอบยังไง → action=notify_admin
-- ถ้าไม่มั่นใจเลย → action=ignore เงียบไว้
-- reply_text: ใช้ภาษาวัยรุ่น สั้นๆ เป็นกันเอง อาจมี emoji ได้ ถ้าเป็นเรื่อง timesheet → กวนๆ / ถ้าคุยเล่น → สนุกๆ ไม่ต้องกวน`;
+- reply_text: ใช้ภาษาวัยรุ่น สั้นๆ เป็นกันเอง อาจมี emoji ได้ กวนๆ ได้`;
 
   try {
     const res = await openai.chat.completions.create({
