@@ -902,7 +902,15 @@ client.on('messageCreate', async (message) => {
   if (message.author.id === ADMIN_ID) return;
 
   // ข้อ 4: วิเคราะห์ให้ละเอียดว่าข้อความเป็นเรื่อง timesheet จริงๆ ไหม
-  const isTimesheet = await aiIsTimesheetMessage(message.content);
+  // Fast path: ถ้ามี pattern เวลาชัดเจน (X ชม, X hr, X นาที, ทั้งวัน, ลา) → ถือว่าเป็น timesheet ทันที ไม่ต้องถาม AI
+  const clearTimesheetPattern = /\d+\.?\d*\s*(ชม|ชั่วโมง|hr|h\b|นาที|min)|ทั้งวัน|ครึ่งวัน|^ลา|ลาป่วย|ลากิจ|ลาพักร้อน|ลางาน/i;
+  let isTimesheet = clearTimesheetPattern.test(message.content);
+
+  // ถ้าไม่ match pattern ชัดเจน ค่อยให้ AI วิเคราะห์
+  if (!isTimesheet) {
+    isTimesheet = await aiIsTimesheetMessage(message.content);
+  }
+
   if (!isTimesheet) {
     console.log('⚠️ ไม่ใช่ข้อความ timesheet:', message.content);
     return;
