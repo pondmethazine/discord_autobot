@@ -47,6 +47,7 @@ const client = new Client({
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = 'ลงเวลางาน';
 const MSG_ID_COL = 'Z'; // คอลัมน์ซ่อน message ID (ไกลมากไม่มีใครเห็น)
+const AUTHOR_ID_COL = 'Y'; // คอลัมน์ซ่อน Discord User ID ของคนลง timesheet
 
 // Discord Config
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN_SHEET;
@@ -162,14 +163,14 @@ async function updateSheet(range, values) {
   }
 }
 
-// เขียน message ID ลงคอลัมน์ซ่อน
-async function saveMessageId(rowNumber, messageId) {
+// เขียน message ID + Discord user ID ลงคอลัมน์ซ่อน
+async function saveMessageId(rowNumber, messageId, authorId = '') {
   try {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
-      range: `${SHEET_NAME}!${MSG_ID_COL}${rowNumber}`,
+      range: `${SHEET_NAME}!${AUTHOR_ID_COL}${rowNumber}:${MSG_ID_COL}${rowNumber}`,
       valueInputOption: 'RAW',
-      requestBody: { values: [[messageId]] },
+      requestBody: { values: [[authorId, messageId]] },
     });
   } catch (err) {
     console.error('❌ เก็บ message ID ไม่ได้:', err.message);
@@ -427,6 +428,39 @@ async function aiDetectIntent(messageText, mentionedUsers) {
 // ==================== SUPPORT OWNER / SUPPORT BOT ====================
 
 // AI วิเคราะห์ข้อความจาก owner / support bot แล้วตอบกลับหรือแจ้ง admin
+// AI วิเคราะห์ว่าข้อความเป็น timesheet จริงไหม (ละเอียด ไม่ใช่แค่ regex)
+async function aiIsTimesheetMessage(messageText) {
+  try {
+    const prompt = `วิเคราะห์ข้อความนี้ว่าเป็นการลง timesheet/บันทึกเวลาทำงานหรือไม่
+
+ข้อความ: "${messageText}"
+
+ข้อความที่เป็น timesheet:
+- มีชั่วโมง/นาที/ระยะเวลา เช่น "2 ชม.", "30 นาที", "ทั้งวัน"
+- ระบุงาน+เวลา เช่น "ประชุม 1 ชม.", "ทำ report 3hr"
+- การลา เช่น "ลาป่วย", "ลากิจ", "ลาพักร้อน"
+- Onsite / เดินทาง / ประชุม + ระยะเวลา
+
+ข้อความที่ไม่ใช่ timesheet:
+- ทักทาย, คุยเล่น, เหน็บแนม เช่น "Testcase 8", "หิวข้าว", "555"
+- การสนทนาทั่วไป
+- คำถาม/คำขอ
+
+ตอบเป็น JSON: {"is_timesheet": true/false}`;
+
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+    });
+    const result = JSON.parse(res.choices[0].message.content);
+    return result.is_timesheet === true;
+  } catch (err) {
+    console.error('❌ AI เช็ค timesheet ไม่ได้:', err.message);
+    return false;
+  }
+}
+
 async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers) {
   const prompt = `คุณเป็น bot ที่คอยช่วย support ${authorRole} ในแชนแนล Discord ของบริษัท
 โดยเน้นให้บรรยากาศสนุกๆ กวนๆ ไม่ต้องสุภาพ
@@ -442,13 +476,16 @@ async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers) {
   "notify_reason": "เหตุผลที่แจ้ง admin (ถ้า action=notify_admin)"
 }
 
+⚠️ กฎสำคัญ: ต้องวิเคราะห์ให้ละเอียดดีๆ ว่าข้อความนั้นพูดถึงเรื่อง timesheet หรือเรื่องอื่น อย่า reply มั่วๆ ถ้าไม่แน่ใจให้ ignore ดีกว่า
+
 กฎ:
 - ⚠️ ถ้าข้อความดูเหมือนเป็นการลง timesheet (มีชั่วโมง เช่น "2 ชม.", มีชื่องาน, มี project) → action=timesheet (จะปล่อยให้ระบบลง timesheet ปกติ)
 - ⚠️ ถ้าข้อความขึ้นต้นหรือมีคำว่า "ลา" เช่น "ลาพักร้อน", "ลาป่วย", "ลากิจ", "ลางาน", "ลาครึ่งวัน" → action=timesheet เสมอ (เป็นการลง timesheet ว่าลางาน)
-- ถ้าเป็นการเหน็บแนม/บ่น/ทวงคนลง timesheet → action=reply ตอบสนับสนุนกวนๆ เสริมดราม่า
+- ⚠️ action=reply ใช้เฉพาะเมื่อข้อความเกี่ยวข้องกับเรื่อง timesheet โดยตรง เช่น ทวง/บ่น/เหน็บคนที่ยังไม่ลง, บ่นเรื่องลง timesheet
+- ⚠️ ถ้า support bot พิมพ์เรื่องทั่วไป (ทักทาย, คุยเล่น, ข้อความระบบ) ที่ไม่เกี่ยว timesheet → action=ignore อย่าไปสนับสนุนสุ่มมั่ว
 - ถ้ามี keyword คำขอ/ขอให้ช่วย/สั่งงาน/คำถามที่จริงจัง หรือ mention พร้อมคำขอ → action=notify_admin
 - ถ้าเป็น owner แล้วมีข้อความที่ไม่แน่ใจว่าควรตอบยังไง → action=notify_admin
-- ถ้าเป็นเรื่องทั่วไปที่ไม่ต้องตอบ → action=ignore
+- ถ้าไม่มั่นใจว่าจะ reply ยังไง → action=ignore เงียบไว้
 - reply_text: ใช้ภาษาวัยรุ่น สั้นๆ ไม่สุภาพ อาจมี emoji ได้`;
 
   try {
@@ -789,31 +826,29 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // ==================== FAT GUY: ตอบทุกข้อความด้วยคำว่า "อ้วน" ====================
+  // ==================== FAT GUY: ตอบเฉพาะข้อความที่ไม่ใช่ timesheet ด้วยคำว่า "อ้วน" ====================
   if (message.author.id === FAT_GUY_ID) {
-    try {
-      const prompt = `ผู้ใช้พิมพ์ข้อความ: "${message.content}"
+    const looksLikeTimesheet = /ชม\.?|ชั่วโมง|นาที|ทั้งวัน|ครึ่งวัน|ลา|ประชุม|เดินทาง|onsite|\d+\s*hr/i.test(message.content);
+    if (!looksLikeTimesheet) {
+      try {
+        const prompt = `ผู้ใช้พิมพ์ข้อความ: "${message.content}"
 
 งานของคุณ: ตอบกลับข้อความนี้ 1 ประโยค
-- ถ้าดูเหมือนเป็นการลง timesheet → ตอบชมหรือรับทราบกวนๆ
-- ถ้าไม่ใช่ timesheet → ตอบกลับแบบไม่สุภาพ กวนๆ
+- ตอบกลับแบบไม่สุภาพ กวนๆ
 - ⚠️ ต้องลงท้ายด้วยคำที่เกี่ยวกับ "อ้วน" เสมอ เช่น "อ้วน", "อ้วง", "ไอ้อ้วน", "ไอ้อ้วง", "เจ้าอ้วน"
 - ตอบสั้นๆ 1 ประโยค ไม่ต้องอธิบาย`;
-
-      const res = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-      });
-      const reply = res.choices[0].message.content.trim();
-      await message.reply(reply);
-    } catch (err) {
-      console.error('❌ Fat guy reply ไม่ได้:', err.message);
+        const res = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+        });
+        const reply = res.choices[0].message.content.trim();
+        await message.reply(reply);
+      } catch (err) {
+        console.error('❌ Fat guy reply ไม่ได้:', err.message);
+      }
+      return; // ไม่ลง Sheet
     }
-
-    // ถ้าดูเหมือน timesheet → ปล่อยผ่านให้ระบบลง Sheet
-    // ถ้าไม่ใช่ → return ไม่ต้องลง Sheet
-    const looksLikeTimesheet = /ชม\.|ชั่วโมง|นาที|ทั้งวัน|ครึ่งวัน|ลา|ประชุม|เดินทาง|onsite/i.test(message.content);
-    if (!looksLikeTimesheet) return;
+    // ถ้าเป็น timesheet → ปล่อยผ่านให้ระบบลง Sheet ตามปกติ (ไม่ต้อง reply)
   }
 
   // ==================== ตรวจจับคำว่า "อ้วน" ====================
@@ -862,6 +897,16 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // ข้อ 5: ข้อความของ admin ไม่ต้องลง timesheet (แต่ admin ยังใช้ export buttons ได้ข้างบน)
+  if (message.author.id === ADMIN_ID) return;
+
+  // ข้อ 4: วิเคราะห์ให้ละเอียดว่าข้อความเป็นเรื่อง timesheet จริงๆ ไหม
+  const isTimesheet = await aiIsTimesheetMessage(message.content);
+  if (!isTimesheet) {
+    console.log('⚠️ ไม่ใช่ข้อความ timesheet:', message.content);
+    return;
+  }
+
   // ถ้าเป็นกรอกข้อมูลปกติ
   const headers = await getHeaders();
   if (headers.length === 0) {
@@ -886,7 +931,7 @@ client.on('messageCreate', async (message) => {
     const row = mapToRow(headers, aiResult);
     const rowNumber = await appendToSheet(headers, [row]);
     if (rowNumber) {
-      await saveMessageId(rowNumber, message.id);
+      await saveMessageId(rowNumber, message.id, message.author.id);
     } else {
       allSuccess = false;
     }
@@ -934,7 +979,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
     for (const aiResult of aiRows) {
       const row = mapToRow(headers, aiResult);
       const newRow = await appendToSheet(headers, [row]);
-      if (newRow) await saveMessageId(newRow, newMessage.id);
+      if (newRow) await saveMessageId(newRow, newMessage.id, newMessage.author.id);
     }
     console.log(`📝 ลบ ${allRows.length} แถวเก่า → สร้าง ${aiRows.length} แถวใหม่`);
   }
@@ -1009,16 +1054,21 @@ async function checkMissingUsers(targetDate = new Date()) {
   const checkAD = `${day}/${month}/${yearAD}`;
   const checkBE = `${day}/${month}/${yearBE}`;
 
-  const filledNames = new Set();
+  // index ของคอลัมน์ AUTHOR_ID_COL (Y = index 24)
+  const authorColIdx = AUTHOR_ID_COL.charCodeAt(0) - 65;
+
+  // เก็บ Discord ID ของคนที่กรอกวันนี้ (match จาก ID ที่ซ่อนในคอลัมน์ Y)
+  const filledIds = new Set();
   for (let i = 1; i < data.length; i++) {
     const rowDate = normalizeDate((data[i][dateColIdx] || '').trim());
-    const rowName = (data[i][nameColIdx] || '').trim();
-    if (rowDate === checkAD || rowDate === checkBE) {
-      filledNames.add(rowName.toLowerCase());
+    const rowAuthorId = (data[i][authorColIdx] || '').trim();
+    if ((rowDate === checkAD || rowDate === checkBE) && rowAuthorId) {
+      filledIds.add(rowAuthorId);
     }
   }
 
-  return users.filter(u => !filledNames.has(u.name.toLowerCase()));
+  // match จาก Discord ID (แม่นยำกว่า username เพราะ ID ไม่เปลี่ยน)
+  return users.filter(u => !filledIds.has(u.discordId));
 }
 
 // ส่งแจ้งเตือนใน Discord
@@ -1177,7 +1227,7 @@ client.on('interactionCreate', async (interaction) => {
       const row = mapToRow(headers, aiResult);
       const rowNumber = await appendToSheet(headers, [row]);
       if (rowNumber) {
-        await saveMessageId(rowNumber, message.id);
+        await saveMessageId(rowNumber, message.id, message.author.id);
       } else {
         allSuccess = false;
       }
