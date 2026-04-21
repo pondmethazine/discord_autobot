@@ -461,13 +461,14 @@ async function aiIsTimesheetMessage(messageText) {
   }
 }
 
-async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers) {
+async function aiAnalyzeOwnerMessage(messageText, authorRole, mentionedUsers, botMentioned = false) {
   const prompt = `คุณเป็น bot ที่คอยช่วย support ${authorRole} ในแชนแนล Discord ของบริษัท
 โดยเน้นให้บรรยากาศสนุกๆ กวนๆ ไม่ต้องสุภาพ
 ในแชนแนลนี้ทุกคนจะลง timesheet กัน บางทีคนในแชนแนลจะเหน็บแนมคนที่ยังไม่ลง
 
 ข้อความที่ได้รับจาก ${authorRole}: "${messageText}"
 คนที่ถูก mention: ${mentionedUsers.length > 0 ? mentionedUsers.map(u => u.username).join(', ') : 'ไม่มี'}
+ถูก mention bot เราหรือไม่: ${botMentioned ? 'ใช่ (owner กำลังคุยกับ bot โดยตรง)' : 'ไม่'}
 
 วิเคราะห์แล้วตอบเป็น JSON:
 {
@@ -492,8 +493,9 @@ Pattern ที่ชัดเจน:
 - "ลาพักร้อน" → timesheet ✅
 
 กฎอื่นๆ:
-- ⚠️ ถ้าเป็น owner แล้ว mention คนอื่น (มีคนถูก mention ในข้อความ) → action=reply ตอบกลับกวนๆ สนับสนุนสิ่งที่ owner พูดถึง เสริมดราม่าโดยใช้ข้อมูลที่ owner พูด
-- ⚠️ ถ้าเป็น owner แล้วไม่ได้ mention ใคร (เช่น คุยเล่น, ทักทาย, บ่น, พูดเรื่องทั่วไป) → action=notify_admin เสมอ (ส่งไป admin วิเคราะห์)
+- ⚠️ ถ้าเป็น owner แล้ว mention bot เรา (ถูก mention bot=ใช่) → action=reply ตอบคำถาม/สนทนากับ owner ได้เลย สั้นๆ เป็นกันเอง กวนได้นิดหน่อย
+- ⚠️ ถ้าเป็น owner แล้ว mention คนอื่น (ที่ไม่ใช่ bot) → action=reply ตอบกลับกวนๆ สนับสนุนสิ่งที่ owner พูดถึง เสริมดราม่าโดยใช้ข้อมูลที่ owner พูด
+- ⚠️ ถ้าเป็น owner แล้วไม่ได้ mention ใครเลย (เช่น คุยเล่น, ทักทาย, บ่น, พูดเรื่องทั่วไป) → action=notify_admin เสมอ (ส่งไป admin วิเคราะห์)
 - ⚠️ ถ้าเป็นการเหน็บแนม/ทวง/บ่นคนที่ยังไม่ลง timesheet (จาก support bot) → action=reply สนับสนุนกวนๆ เสริมดราม่า
 - ⚠️ ถ้าเป็น support bot พิมพ์เรื่องทั่วไปที่ไม่เกี่ยว timesheet → action=ignore (ไม่ต้องตอบ bot อีกตัว)
 - reply_text: ใช้ภาษาวัยรุ่น สั้นๆ เป็นกันเอง อาจมี emoji ได้ กวนๆ ได้`;
@@ -818,7 +820,8 @@ client.on('messageCreate', async (message) => {
   if (message.author.id === OWNER_ID || message.author.id === SUPPORT_BOT_ID) {
     const role = message.author.id === OWNER_ID ? 'owner ของ server' : 'bot แจ้งเตือน timesheet';
     const mentionedUsers = [...message.mentions.users.values()];
-    const result = await aiAnalyzeOwnerMessage(message.content, role, mentionedUsers);
+    const botMentioned = message.mentions.has(client.user);
+    const result = await aiAnalyzeOwnerMessage(message.content, role, mentionedUsers, botMentioned);
     console.log(`🎯 Owner/SupportBot analysis:`, result);
 
     if (result.action === 'timesheet') {
