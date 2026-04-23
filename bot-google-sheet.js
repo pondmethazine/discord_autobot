@@ -1120,13 +1120,44 @@ async function sendReminder(type = 'today') {
     // หาวันทำงานล่าสุด (จันทร์ → ศุกร์, พุธหลังหยุด → อังคาร ฯลฯ)
     const lastWorkingDay = getLastWorkingDay();
     const missing = await checkMissingUsers(lastWorkingDay);
+    const dateStr = `${lastWorkingDay.getDate()}/${lastWorkingDay.getMonth() + 1}/${lastWorkingDay.getFullYear()}`;
+    const dayNames = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+    const lastDayName = dayNames[lastWorkingDay.getDay()];
+
+    // เช็คว่า "วันทำงานล่าสุด" = เมื่อวาน (1 วันก่อน) หรือข้ามวันหยุดมา
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(0, 0, 0, 0);
+    const lastWd = new Date(lastWorkingDay);
+    lastWd.setHours(0, 0, 0, 0);
+    const isYesterday = yesterday.getTime() === lastWd.getTime();
+
+    // คำที่ใช้เรียก: "เมื่อวาน" ถ้าวันถัดไปเป็น 1 วัน, ไม่งั้นใช้ "วันXXX"
+    const dayLabel = isYesterday ? `เมื่อวาน (${dateStr})` : `วัน${lastDayName}ที่ ${dateStr}`;
+
     if (!missing || missing.length === 0) {
-      console.log('✅ ทุกคนกรอกข้อมูลวันทำงานล่าสุดครบแล้ว');
+      // ทุกคนกรอกครบ → ส่งข้อความขอบคุณ (ให้ AI สร้างข้อความ random)
+      try {
+        const prompt = `สร้างข้อความขอบคุณทุกคนที่ลง timesheet ของ${dayLabel} ครบแล้ว 1 ข้อความ
+- ใช้ภาษาไทย สบายๆ เป็นกันเอง กวนๆ ได้
+- 1-2 ประโยค สั้นๆ
+- ใส่ emoji ได้ 1-2 ตัว
+- หลากหลาย ไม่ซ้ำเดิม
+- ถ้าเป็น "เมื่อวาน" ให้ใช้คำว่า "เมื่อวาน" ไม่ต้องระบุชื่อวัน
+- ตอบเฉพาะข้อความ ไม่ต้องอธิบาย`;
+        const res = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+        });
+        await channel.send(res.choices[0].message.content.trim());
+      } catch (e) {
+        await channel.send(`🎉 ทุกคนกรอก timesheet ของ${dayLabel} ครบแล้ว ขอบคุณครับ!`);
+      }
+      console.log(`✅ ทุกคนกรอก ${dateStr} ครบ → ส่งข้อความขอบคุณ`);
       return;
     }
-    const dateStr = `${lastWorkingDay.getDate()}/${lastWorkingDay.getMonth() + 1}/${lastWorkingDay.getFullYear()}`;
     const mentions = missing.map(u => `<@${u.discordId}>`).join(' ');
-    await channel.send(`⏰ ยังไม่ได้กรอกข้อมูลของวันที่ ${dateStr}:\n${mentions}\nกรุณากรอกย้อนหลังด้วยนะครับ!`);
+    await channel.send(`⏰ ยังไม่ได้กรอกข้อมูลของ${dayLabel}:\n${mentions}\nกรุณากรอกย้อนหลังด้วยนะครับ!`);
     console.log(`⏰ แจ้งเตือนย้อนหลัง (${dateStr}) ${missing.length} คน`);
   } else {
     // เช็ควันนี้
