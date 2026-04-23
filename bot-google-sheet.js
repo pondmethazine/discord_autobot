@@ -822,23 +822,33 @@ client.on('messageCreate', async (message) => {
   const FAT_GUY_ID = '1369270229481422908';
   if (message.author.id === OWNER_ID || message.author.id === SUPPORT_BOT_ID) {
     const role = message.author.id === OWNER_ID ? 'owner ของ server' : 'bot แจ้งเตือน timesheet';
-    const mentionedUsers = [...message.mentions.users.values()];
+    const ownerMentionedUsers = [...message.mentions.users.values()];
     const botMentioned = message.mentions.has(client.user);
-    const result = await aiAnalyzeOwnerMessage(message.content, role, mentionedUsers, botMentioned);
-    console.log(`🎯 Owner/SupportBot analysis:`, result);
 
-    if (result.action === 'timesheet') {
-      // ปล่อยให้ระบบปกติลง timesheet ต่อ
+    // Fast path: ถ้ามี pattern timesheet ชัดเจน → ปล่อยผ่านไปเลย ไม่ต้องถาม AI
+    const ownerClearTimesheetPattern = /\d+\.?\d*\s*(ชม|ชั่วโมง|hr|h\b|นาที|min)|ทั้งวัน|ครึ่งวัน|^ลา|ลาป่วย|ลากิจ|ลาพักร้อน|ลางาน|\S+\s+\d+\.?\d*\s*$/im;
+    const isOwnerTimesheet = ownerClearTimesheetPattern.test(message.content);
+
+    if (isOwnerTimesheet) {
+      console.log(`🎯 Owner timesheet fast path → ปล่อยให้ลง Sheet`);
+      // ปล่อยผ่านไปทำ timesheet logic ปกติ (ไม่เรียก AI)
     } else {
-      if (result.action === 'reply' && result.reply_text) {
-        await message.reply(result.reply_text);
-      } else if (result.action === 'notify_admin') {
-        try {
-          const admin = await client.users.fetch(ADMIN_ID);
-          await admin.send(`📬 มีคำขอ/คำถามจาก ${message.author.username}\n💬 "${message.content}"\n🤔 ${result.notify_reason || ''}\n🔗 ${message.url}`);
-        } catch (e) {}
+      const result = await aiAnalyzeOwnerMessage(message.content, role, ownerMentionedUsers, botMentioned);
+      console.log(`🎯 Owner/SupportBot analysis:`, result);
+
+      if (result.action === 'timesheet') {
+        // ปล่อยให้ระบบปกติลง timesheet ต่อ
+      } else {
+        if (result.action === 'reply' && result.reply_text) {
+          await message.reply(result.reply_text);
+        } else if (result.action === 'notify_admin') {
+          try {
+            const admin = await client.users.fetch(ADMIN_ID);
+            await admin.send(`📬 มีคำขอ/คำถามจาก ${message.author.username}\n💬 "${message.content}"\n🤔 ${result.notify_reason || ''}\n🔗 ${message.url}`);
+          } catch (e) {}
+        }
+        return; // ไม่บันทึกลง Sheet
       }
-      return; // ไม่บันทึกลง Sheet
     }
   }
 
