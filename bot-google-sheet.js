@@ -261,6 +261,7 @@ async function getDropdownValues() {
 }
 
 // ==================== AI FUNCTION ====================
+//hello//
 
 // ให้ AI วิเคราะห์ข้อความแล้ว map ลง column ที่เหมาะสม (รองรับ multi-line)
 async function aiMapToColumns(headers, username, messageText, dropdowns = {}) {
