@@ -3,7 +3,7 @@ process.env.TZ = 'Asia/Bangkok';
 
 const { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { google } = require('googleapis');
-const OpenAI = require('openai');
+const { GoogleGenAI } = require('@google/genai');
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
@@ -31,7 +31,46 @@ function getLastWorkingDay(from = new Date()) {
 
 // ==================== CONFIG ====================
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
+// ปิด safety filter — แชนแนลนี้คุยกันกวนๆ ถ้าไม่ปิด Gemini จะบล็อกแล้ว .text เป็น undefined
+const SAFETY_OFF = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+];
+
+// ปิด thinking สำหรับงานเบา — เร็วขึ้น ~5 เท่า โดยคำตอบไม่ต่างกัน
+const NO_THINKING = { thinkingBudget: 0 };
+
+// เรียก Gemini ให้ตอบเป็น JSON object (fast = งานเบา ไม่ต้องคิดเยอะ)
+async function geminiJson(prompt, { fast = false } = {}) {
+  const res = await genai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt,
+    config: {
+      responseMimeType: 'application/json',
+      safetySettings: SAFETY_OFF,
+      ...(fast && { thinkingConfig: NO_THINKING }),
+    },
+  });
+  if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
+  return JSON.parse(res.text);
+}
+
+// เรียก Gemini ให้ตอบเป็นข้อความล้วน (ใช้กับข้อความสั้นๆ ตอบเล่น)
+async function geminiText(prompt) {
+  const res = await genai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt,
+    config: { safetySettings: SAFETY_OFF, thinkingConfig: NO_THINKING },
+  });
+  if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
+  return res.text.trim();
+}
 
 const client = new Client({
   intents: [
@@ -372,13 +411,7 @@ Project cfarm วันที่ 10/03/2026"
 ]}`;
 
   try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-5.4-mini-2026-03-17',
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-    });
-
-    const result = JSON.parse(res.choices[0].message.content);
+    const result = await geminiJson(prompt);
     return result.rows || [result]; // fallback ถ้า AI ตอบเป็น object เดียว
   } catch (err) {
     console.error('❌ AI วิเคราะห์ไม่ได้:', err.message);
@@ -415,12 +448,7 @@ async function aiDetectIntent(messageText, mentionedUsers) {
 - ใช้ date_from/date_to สำหรับช่วงวันที่ ใช้ specific_dates สำหรับวันที่เฉพาะเจาะจง`;
 
   try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-5.4-mini-2026-03-17',
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-    });
-    return JSON.parse(res.choices[0].message.content);
+    return await geminiJson(prompt);
   } catch (err) {
     console.error('❌ AI detect intent ไม่ได้:', err.message);
     return { intent: 'data' };
@@ -452,12 +480,7 @@ async function aiIsTimesheetMessage(messageText) {
 
 ตอบเป็น JSON: {"is_timesheet": true/false}`;
 
-    const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-    });
-    const result = JSON.parse(res.choices[0].message.content);
+    const result = await geminiJson(prompt, { fast: true });
     return result.is_timesheet === true;
   } catch (err) {
     console.error('❌ AI เช็ค timesheet ไม่ได้:', err.message);
@@ -505,12 +528,7 @@ Pattern ที่ชัดเจน:
 - reply_text: ใช้ภาษาวัยรุ่น สั้นๆ เป็นกันเอง อาจมี emoji ได้ กวนๆ ได้`;
 
   try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      response_format: { type: 'json_object' },
-    });
-    return JSON.parse(res.choices[0].message.content);
+    return await geminiJson(prompt, { fast: true });
   } catch (err) {
     console.error('❌ AI วิเคราะห์ owner message ไม่ได้:', err.message);
     return { action: 'ignore' };
@@ -864,11 +882,7 @@ client.on('messageCreate', async (message) => {
 - ตอบกลับแบบไม่สุภาพ กวนๆ
 - ⚠️ ต้องลงท้ายด้วยคำที่เกี่ยวกับ "อ้วน" เสมอ เช่น "อ้วน", "อ้วง", "ไอ้อ้วน", "ไอ้อ้วง", "เจ้าอ้วน"
 - ตอบสั้นๆ 1 ประโยค ไม่ต้องอธิบาย`;
-        const res = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: prompt }],
-        });
-        const reply = res.choices[0].message.content.trim();
+        const reply = await geminiText(prompt);
         await message.reply(reply);
       } catch (err) {
         console.error('❌ Fat guy reply ไม่ได้:', err.message);
@@ -1146,11 +1160,7 @@ async function sendReminder(type = 'today') {
 - หลากหลาย ไม่ซ้ำเดิม
 - ถ้าเป็น "เมื่อวาน" ให้ใช้คำว่า "เมื่อวาน" ไม่ต้องระบุชื่อวัน
 - ตอบเฉพาะข้อความ ไม่ต้องอธิบาย`;
-        const res = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: prompt }],
-        });
-        await channel.send(res.choices[0].message.content.trim());
+        await channel.send(await geminiText(prompt));
       } catch (e) {
         await channel.send(`🎉 ทุกคนกรอก timesheet ของ${dayLabel} ครบแล้ว ขอบคุณครับ!`);
       }
@@ -1203,16 +1213,12 @@ setInterval(() => {
 // ให้ AI สร้างข้อความให้กำลังใจตอนเช้า
 // async function generateMorningMessage() {
 //   try {
-//     const res = await openai.chat.completions.create({
-//       model: 'gpt-4o-mini',
-//       messages: [{ role: 'user', content: `สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
+//     return await geminiText(`สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
 // - ใช้ภาษาไทย สบายๆ เป็นกันเอง
 // - ใส่ emoji ได้
 // - ห้ามซ้ำกับคำว่า "สู้ๆ" ตรงๆ ให้หลากหลาย
 // - อาจเป็นมุกตลก คำคม หรือให้กำลังใจ สลับกันไป
-// - ตอบแค่ข้อความเท่านั้น ไม่ต้องอธิบาย` }],
-//     });
-//     return res.choices[0].message.content.trim();
+// - ตอบแค่ข้อความเท่านั้น ไม่ต้องอธิบาย`);
 //   } catch (err) {
 //     console.error('❌ สร้างข้อความเช้าไม่ได้:', err.message);
 //     return '☀️ เช้าวันใหม่ ขอให้ทุกคนมีวันที่ดีนะครับ!';
