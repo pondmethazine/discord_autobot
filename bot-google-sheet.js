@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const holidays = require('./holidays.json');
+const { isInfoQuestion, answerInfoQuestion } = require('./company-info');
 
 // เช็คว่าวันที่ระบุเป็นวันหยุดหรือไม่ (เสาร์-อาทิตย์ + วันหยุดนักขัตฤกษ์)
 function isHoliday(date = new Date()) {
@@ -30,6 +31,12 @@ function getLastWorkingDay(from = new Date()) {
 }
 
 // ==================== CONFIG ====================
+
+// Pattern ที่ถือว่า "เป็น timesheet แน่นอน" — ใช้ที่เดียวกันทุกจุด อย่าแยก copy
+// - มีตัวเลข + หน่วยเวลา (ชม, ชั่วโมง, hr, นาที, min)
+// - ทั้งวัน / ครึ่งวัน / การลา
+// - มีตัวเลขต่อท้ายบรรทัด (เช่น "Testcase power 5")
+const CLEAR_TIMESHEET_PATTERN = /\d+\.?\d*\s*(ชม|ชั่วโมง|hr|h\b|นาที|min)|ทั้งวัน|ครึ่งวัน|^ลา|ลาป่วย|ลากิจ|ลาพักร้อน|ลางาน|\S+\s+\d+\.?\d*\s*$/im;
 
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -835,6 +842,25 @@ client.on('messageCreate', async (message) => {
 
   if (message.channel.id !== CHANNEL_ID) return;
 
+  // ==================== ถาม-ตอบ: วันเกิดพนักงาน / วันหยุดบริษัท ====================
+  // ⚠️ ห้ามกระทบ timesheet: เข้าเงื่อนไขนี้ได้เฉพาะข้อความที่
+  //    1) ไม่เข้า CLEAR_TIMESHEET_PATTERN เลย (ไม่มีชั่วโมง/ไม่ใช่การลา/ไม่มีเลขท้ายบรรทัด) และ
+  //    2) เป็นคำถามเรื่องวันเกิด/วันหยุดชัดเจน (หรือ tag bot มาถาม)
+  //    ข้อความที่หลุดเงื่อนไขนี้เดิมก็จะโดน AI ตีเป็น "ไม่ใช่ timesheet" แล้วถูกทิ้งอยู่ดี
+  if (!CLEAR_TIMESHEET_PATTERN.test(message.content)) {
+    const askText = message.content.replace(/<@!?\d+>/g, '').trim();
+    const askedBot = message.mentions.has(client.user);
+    if (isInfoQuestion(askText, { botMentioned: askedBot })) {
+      console.log('📅 คำถามวันเกิด/วันหยุด:', askText);
+      try {
+        await message.reply(await answerInfoQuestion(askText, geminiText));
+      } catch (err) {
+        console.error('❌ ตอบคำถามวันเกิด/วันหยุดไม่ได้:', err.message);
+      }
+      return; // จบที่นี่ ไม่ลง Sheet
+    }
+  }
+
   // ==================== SUPPORT OWNER / SUPPORT BOT / FAT GUY ====================
   const OWNER_ID = '1131175352018944050';
   const SUPPORT_BOT_ID = '1480443439706275922';
@@ -845,8 +871,7 @@ client.on('messageCreate', async (message) => {
     const botMentioned = message.mentions.has(client.user);
 
     // Fast path: ถ้ามี pattern timesheet ชัดเจน → ปล่อยผ่านไปเลย ไม่ต้องถาม AI
-    const ownerClearTimesheetPattern = /\d+\.?\d*\s*(ชม|ชั่วโมง|hr|h\b|นาที|min)|ทั้งวัน|ครึ่งวัน|^ลา|ลาป่วย|ลากิจ|ลาพักร้อน|ลางาน|\S+\s+\d+\.?\d*\s*$/im;
-    const isOwnerTimesheet = ownerClearTimesheetPattern.test(message.content);
+    const isOwnerTimesheet = CLEAR_TIMESHEET_PATTERN.test(message.content);
 
     if (isOwnerTimesheet) {
       console.log(`🎯 Owner timesheet fast path → ปล่อยให้ลง Sheet`);
@@ -946,8 +971,7 @@ client.on('messageCreate', async (message) => {
   // - มีหน่วยเวลาชัดๆ (ชม, hr, นาที)
   // - ทั้งวัน / ครึ่งวัน / ลา
   // - มีตัวเลขต่อท้ายคำ/บรรทัด (เช่น "Testcase power 5", "Enconform 3") → น่าจะเป็นชั่วโมง
-  const clearTimesheetPattern = /\d+\.?\d*\s*(ชม|ชั่วโมง|hr|h\b|นาที|min)|ทั้งวัน|ครึ่งวัน|^ลา|ลาป่วย|ลากิจ|ลาพักร้อน|ลางาน|\S+\s+\d+\.?\d*\s*$/im;
-  let isTimesheet = clearTimesheetPattern.test(message.content);
+  let isTimesheet = CLEAR_TIMESHEET_PATTERN.test(message.content);
 
   // ถ้าไม่ match pattern ชัดเจน ค่อยให้ AI วิเคราะห์
   if (!isTimesheet) {
