@@ -3,7 +3,6 @@ process.env.TZ = 'Asia/Bangkok';
 
 const { Client, GatewayIntentBits, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { google } = require('googleapis');
-const { GoogleGenAI } = require('@google/genai');
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
@@ -38,47 +37,24 @@ function getLastWorkingDay(from = new Date()) {
 // - มีตัวเลขต่อท้ายบรรทัด (เช่น "Testcase power 5")
 const CLEAR_TIMESHEET_PATTERN = /\d+\.?\d*\s*(ชม|ชั่วโมง|hr|h\b|นาที|min)|ทั้งวัน|ครึ่งวัน|^ลา|ลาป่วย|ลากิจ|ลาพักร้อน|ลางาน|\S+\s+\d+\.?\d*\s*$/im;
 
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-const GEMINI_MODEL = 'gemini-2.5-flash';
-
-// ปิด safety filter — แชนแนลนี้คุยกันกวนๆ ถ้าไม่ปิด Gemini จะบล็อกแล้ว .text เป็น undefined
-const SAFETY_OFF = [
-  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-];
-
-// ปิด thinking สำหรับงานเบา — เร็วขึ้น ~5 เท่า โดยคำตอบไม่ต่างกัน
-const NO_THINKING = { thinkingBudget: 0 };
-
-// ==================== OPENAI FALLBACK ====================
-// Gemini เป็นตัวหลักเหมือนเดิม ถ้าเรียกไม่ผ่าน (คีย์หมดอายุ / quota / โดน filter)
-// จะสลับไป OpenAI ให้อัตโนมัติ เพื่อไม่ให้ทั้งบอทหยุดทำงานเพราะคีย์เดียว
+// ==================== AI (OPENROUTER) ====================
+// วิ่งผ่าน OpenRouter ตัวเดียว ใช้คีย์ร่วมกับโปรเจกต์ etax-web
+// โมเดลหลักยังเป็น gemini-2.5-flash ตัวเดิม (prompt ทั้งหมด tune กับตัวนี้มาแล้ว)
+// ถ้าโมเดลหลักล่ม/ถูก safety filter บล็อกจนไม่ตอบ จะสลับไปโมเดลสำรองอัตโนมัติ
 const OpenAI = require('openai');
-const OPENAI_MODEL = 'gpt-4.1-mini';
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
 
-// เมื่อ Gemini พัง จะพักไม่เรียกซ้ำ 10 นาที (ไม่งั้นทุกข้อความต้องรอ Gemini timeout ก่อนเสมอ)
-// พอครบ 10 นาทีจะลอง Gemini ใหม่เอง — ใส่คีย์ใหม่ใน .env แล้วรีสตาร์ทได้ทันทีเช่นกัน
-const GEMINI_COOLDOWN_MS = 10 * 60 * 1000;
-let geminiDownUntil = 0;
+const AI_MODEL = process.env.AI_MODEL || 'google/gemini-2.5-flash';
+const AI_MODEL_FALLBACK = process.env.AI_MODEL_FALLBACK || 'openai/gpt-4.1-mini';
 
-function isGeminiDown() {
-  if (!process.env.GEMINI_API_KEY) return true;
-  return Date.now() < geminiDownUntil;
-}
-
-function markGeminiDown(err) {
-  const first = geminiDownUntil === 0 || Date.now() >= geminiDownUntil;
-  geminiDownUntil = Date.now() + GEMINI_COOLDOWN_MS;
-  if (first) {
-    console.error(`⚠️ Gemini ใช้ไม่ได้ → สลับไป OpenAI (${OPENAI_MODEL}) 10 นาที: ${err.message}`);
-  }
-}
+const ai = new OpenAI({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  baseURL: 'https://openrouter.ai/api/v1',
+  defaultHeaders: {
+    // แยก tag ให้ชัด จะได้ดูค่าใช้จ่ายแยกจาก etax-web ได้ในหน้า OpenRouter
+    'X-Title': 'discord-timesheet-bot',
+    'HTTP-Referer': 'https://phasicharoen.com',
+  },
+});
 
 // ดึง JSON ออกจากคำตอบ เผื่อโมเดลห่อด้วย ```json ... ```
 function parseJsonLoose(text) {
@@ -86,71 +62,40 @@ function parseJsonLoose(text) {
   return JSON.parse(clean);
 }
 
-async function openaiJson(prompt) {
-  if (!openai) throw new Error('ไม่มีทั้ง GEMINI_API_KEY และ OPENAI_API_KEY ที่ใช้ได้');
-  const res = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
-    response_format: { type: 'json_object' },
+async function callAi(prompt, { json = false, model = AI_MODEL } = {}) {
+  const res = await ai.chat.completions.create({
+    model,
+    ...(json && { response_format: { type: 'json_object' } }),
     messages: [
-      { role: 'system', content: 'ตอบกลับเป็น JSON object เท่านั้น ห้ามมีข้อความอื่นนอก JSON' },
+      ...(json
+        ? [{ role: 'system', content: 'ตอบกลับเป็น JSON object เท่านั้น ห้ามมีข้อความอื่นนอก JSON' }]
+        : []),
       { role: 'user', content: prompt },
     ],
   });
   const text = res.choices?.[0]?.message?.content;
-  if (!text) throw new Error('OpenAI ไม่ตอบกลับ');
-  return parseJsonLoose(text);
+  if (!text) throw new Error(`${model} ไม่ตอบกลับ (อาจโดน filter บล็อก)`);
+  return text;
 }
 
-async function openaiText(prompt) {
-  if (!openai) throw new Error('ไม่มีทั้ง GEMINI_API_KEY และ OPENAI_API_KEY ที่ใช้ได้');
-  const res = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
-    messages: [{ role: 'user', content: prompt }],
-  });
-  const text = res.choices?.[0]?.message?.content;
-  if (!text) throw new Error('OpenAI ไม่ตอบกลับ');
-  return text.trim();
-}
-
-// เรียก Gemini ให้ตอบเป็น JSON object (fast = งานเบา ไม่ต้องคิดเยอะ)
-// ถ้า Gemini พัง (คีย์หมดอายุ / โดน filter / quota) จะสลับไป OpenAI ให้อัตโนมัติ
-async function geminiJson(prompt, { fast = false } = {}) {
-  if (!isGeminiDown()) {
-    try {
-      const res = await genai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          safetySettings: SAFETY_OFF,
-          ...(fast && { thinkingConfig: NO_THINKING }),
-        },
-      });
-      if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
-      return JSON.parse(res.text);
-    } catch (err) {
-      markGeminiDown(err);
-    }
+// ลองโมเดลหลักก่อน พังค่อยไปโมเดลสำรอง — โยน error ออกไปให้ caller เดิมจัดการเหมือนเดิม
+async function callAiWithFallback(prompt, { json = false } = {}) {
+  try {
+    return await callAi(prompt, { json });
+  } catch (err) {
+    console.warn(`⚠️ ${AI_MODEL} ไม่ผ่าน (${err.message}) → ลอง ${AI_MODEL_FALLBACK}`);
+    return await callAi(prompt, { json, model: AI_MODEL_FALLBACK });
   }
-  return openaiJson(prompt);
 }
 
-// เรียก Gemini ให้ตอบเป็นข้อความล้วน (ใช้กับข้อความสั้นๆ ตอบเล่น)
-async function geminiText(prompt) {
-  if (!isGeminiDown()) {
-    try {
-      const res = await genai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: prompt,
-        config: { safetySettings: SAFETY_OFF, thinkingConfig: NO_THINKING },
-      });
-      if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
-      return res.text.trim();
-    } catch (err) {
-      markGeminiDown(err);
-    }
-  }
-  return openaiText(prompt);
+// ให้ AI ตอบเป็น JSON object (fast = งานเบา — เก็บ argument ไว้ให้ call site เดิมเรียกได้เหมือนเดิม)
+async function aiJson(prompt, { fast = false } = {}) {
+  return parseJsonLoose(await callAiWithFallback(prompt, { json: true }));
+}
+
+// ให้ AI ตอบเป็นข้อความล้วน (ใช้กับข้อความสั้นๆ ตอบเล่น)
+async function aiText(prompt) {
+  return (await callAiWithFallback(prompt)).trim();
 }
 
 const client = new Client({
@@ -519,7 +464,7 @@ Project cfarm วันที่ 10/03/2026"
 ]}`;
 
   try {
-    const result = await geminiJson(prompt);
+    const result = await aiJson(prompt);
     return result.rows || [result]; // fallback ถ้า AI ตอบเป็น object เดียว
   } catch (err) {
     console.error('❌ AI วิเคราะห์ไม่ได้:', err.message);
@@ -556,7 +501,7 @@ async function aiDetectIntent(messageText, mentionedUsers) {
 - ใช้ date_from/date_to สำหรับช่วงวันที่ ใช้ specific_dates สำหรับวันที่เฉพาะเจาะจง`;
 
   try {
-    return await geminiJson(prompt);
+    return await aiJson(prompt);
   } catch (err) {
     console.error('❌ AI detect intent ไม่ได้:', err.message);
     return { intent: 'data' };
@@ -588,7 +533,7 @@ async function aiIsTimesheetMessage(messageText) {
 
 ตอบเป็น JSON: {"is_timesheet": true/false}`;
 
-    const result = await geminiJson(prompt, { fast: true });
+    const result = await aiJson(prompt, { fast: true });
     return result.is_timesheet === true;
   } catch (err) {
     console.error('❌ AI เช็ค timesheet ไม่ได้:', err.message);
@@ -636,7 +581,7 @@ Pattern ที่ชัดเจน:
 - reply_text: ใช้ภาษาวัยรุ่น สั้นๆ เป็นกันเอง อาจมี emoji ได้ กวนๆ ได้`;
 
   try {
-    return await geminiJson(prompt, { fast: true });
+    return await aiJson(prompt, { fast: true });
   } catch (err) {
     console.error('❌ AI วิเคราะห์ owner message ไม่ได้:', err.message);
     return { action: 'ignore' };
@@ -972,7 +917,7 @@ client.on('messageCreate', async (message) => {
     if (isInfoQuestion(askText, { botMentioned: askedBot })) {
       console.log('📅 คำถามวันเกิด/วันหยุด:', askText);
       try {
-        await message.reply(await answerInfoQuestion(askText, geminiText));
+        await message.reply(await answerInfoQuestion(askText, aiText));
       } catch (err) {
         console.error('❌ ตอบคำถามวันเกิด/วันหยุดไม่ได้:', err.message);
       }
@@ -1026,7 +971,7 @@ client.on('messageCreate', async (message) => {
 - ตอบกลับแบบไม่สุภาพ กวนๆ
 - ⚠️ ต้องลงท้ายด้วยคำที่เกี่ยวกับ "อ้วน" เสมอ เช่น "อ้วน", "อ้วง", "ไอ้อ้วน", "ไอ้อ้วง", "เจ้าอ้วน"
 - ตอบสั้นๆ 1 ประโยค ไม่ต้องอธิบาย`;
-        const reply = await geminiText(prompt);
+        const reply = await aiText(prompt);
         await message.reply(reply);
       } catch (err) {
         console.error('❌ Fat guy reply ไม่ได้:', err.message);
@@ -1306,7 +1251,7 @@ async function sendReminder(type = 'today') {
 - หลากหลาย ไม่ซ้ำเดิม
 - ถ้าเป็น "เมื่อวาน" ให้ใช้คำว่า "เมื่อวาน" ไม่ต้องระบุชื่อวัน
 - ตอบเฉพาะข้อความ ไม่ต้องอธิบาย`;
-        await channel.send(await geminiText(prompt));
+        await channel.send(await aiText(prompt));
       } catch (e) {
         await channel.send(`🎉 ทุกคนกรอก timesheet ของ${dayLabel} ครบแล้ว ขอบคุณครับ!`);
       }
@@ -1437,7 +1382,7 @@ setInterval(() => {
 // ให้ AI สร้างข้อความให้กำลังใจตอนเช้า
 // async function generateMorningMessage() {
 //   try {
-//     return await geminiText(`สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
+//     return await aiText(`สร้างข้อความให้กำลังใจเพื่อนร่วมงานตอนเช้า 1 ข้อความ สั้นๆ กระชับ 1-2 ประโยค
 // - ใช้ภาษาไทย สบายๆ เป็นกันเอง
 // - ใส่ emoji ได้
 // - ห้ามซ้ำกับคำว่า "สู้ๆ" ตรงๆ ให้หลากหลาย
