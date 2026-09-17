@@ -121,14 +121,6 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN_SHEET;
 const CHANNEL_ID = '1488904036999499910';
 //const CHANNEL_ID = 'test';
 
-// ==================== STANDBY MODE ====================
-// บอทเริ่มมาในโหมด "หยุดทำงาน" — ไม่ลง Sheet ไม่ตอบ ไม่ react ไม่เตือน ไม่ส่ง DM ตามเวลา
-// จะกลับมาทำงานเมื่อ "สมาชิก" (ไม่ใช่ admin) พิมพ์คำปลุก แล้วบอทตอบ "กลับมาทำงานแล้ว"
-// admin พิมพ์คำปลุกเอง = ไม่ปลุก (บอทไม่ action อะไรเหมือนเดิม)
-const WAKE_WORD = 'สาดไปสมาชิก';
-const WAKE_REPLY = 'กลับมาทำงานแล้ว';
-let botActive = false;
-
 // DM Control Map (userId → channelId)
 const dmControlMap = new Map();
 
@@ -796,7 +788,6 @@ async function exportSheetPerPerson(filters, message) {
 
 client.once('ready', async () => {
   console.log(`✅ Bot พร้อมใช้งาน: ${client.user.tag}`);
-  console.log(`⏸️ โหมดหยุดทำงาน — รอสมาชิกพิมพ์ "${WAKE_WORD}" (admin พิมพ์ไม่ปลุก)`);
   console.log(`📊 เชื่อมต่อ Google Sheet ID: ${SPREADSHEET_ID}`);
 
   const headers = await getHeaders();
@@ -885,23 +876,6 @@ client.on('messageCreate', async (message) => {
       }
       return;
     }
-  }
-
-  // ==================== ประตูโหมดหยุดทำงาน ====================
-  // ทุกอย่างหลังบรรทัดนี้คือ "งาน" ของบอท — ถ้ายังไม่ถูกปลุกจะไม่ทำอะไรเลย
-  if (!botActive) {
-    // admin พิมพ์เอง = ไม่ปลุก (เหมือนเดิม: บอทไม่ action อะไรกับข้อความ admin)
-    if (message.author.id === ADMIN_ID) return;
-    if (message.content.replace(/\s+/g, '').includes(WAKE_WORD)) {
-      botActive = true;
-      console.log(`▶️ ถูกปลุกโดย ${message.author.username} (${message.author.id})`);
-      try {
-        await message.reply(WAKE_REPLY);
-      } catch (err) {
-        console.error('❌ ตอบข้อความปลุกไม่ได้:', err.message);
-      }
-    }
-    return;   // ข้อความที่ปลุกก็จบแค่นี้ ไม่ลง Sheet
   }
 
   if (message.channel.id !== CHANNEL_ID) return;
@@ -1082,7 +1056,6 @@ client.on('messageCreate', async (message) => {
 
 // เมื่อมีการแก้ไขข้อความ → ให้ AI วิเคราะห์ใหม่แล้วอัพเดท
 client.on('messageUpdate', async (oldMessage, newMessage) => {
-  if (!botActive) return;
   // ถ้าข้อความเป็น partial (หลัง restart) ให้ fetch ข้อมูลเต็มก่อน
   if (newMessage.partial) await newMessage.fetch();
   if (newMessage.author?.bot) return;
@@ -1130,7 +1103,6 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 
 // เมื่อมีการลบข้อความ → ลบทุกแถวที่เกี่ยวข้องใน Sheet
 client.on('messageDelete', async (message) => {
-  if (!botActive) return;
   if (message.channel.id !== CHANNEL_ID) return;
 
   const rows = await findAllRowsByMessageId(message.id);
@@ -1215,7 +1187,6 @@ async function checkMissingUsers(targetDate = new Date()) {
 
 // ส่งแจ้งเตือนใน Discord
 async function sendReminder(type = 'today') {
-  if (!botActive) return;   // ยังไม่ถูกปลุก → ไม่แจ้งเตือน
   // ถ้าวันนี้เป็นวันหยุด → ไม่แจ้งเตือนอะไรเลย (รวมการแจ้งเตือนย้อนหลังด้วย)
   if (isHoliday()) return;
 
@@ -1278,7 +1249,6 @@ async function sendReminder(type = 'today') {
 // เก็บ flag ว่าเวลาไหนส่งไปแล้ว (reset ทุกวัน)
 const reminderSentFlags = new Set();
 setInterval(() => {
-  if (!botActive) return;   // ยังไม่ถูกปลุก → ไม่แตะ flag ด้วย จะได้ยิงรอบที่เหลือได้หลังถูกปลุก
   const now = new Date();
   const h = now.getHours();
   const m = now.getMinutes();
@@ -1354,7 +1324,6 @@ const scheduledDmSentFlags = new Set();
 const scheduledDmDone = loadScheduledDmDone();   // สำหรับ job ที่ once: true
 
 setInterval(() => {
-  if (!botActive) return;   // ยังไม่ถูกปลุก → ไม่ส่ง DM ตามเวลา
   const now = new Date();
   const h = now.getHours();
   const m = now.getMinutes();
@@ -1419,7 +1388,6 @@ setInterval(() => {
 // ==================== BUTTON INTERACTION ====================
 
 client.on('interactionCreate', async (interaction) => {
-  if (!botActive) return;
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith('choice_')) return;
 
