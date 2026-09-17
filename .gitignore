@@ -3,3 +3,4 @@ node_modules/
 google-credentials.json
 cookies.txt
 *.xlsx
+scheduled-dm-sent.json

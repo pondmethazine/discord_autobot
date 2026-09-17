@@ -53,30 +53,104 @@ const SAFETY_OFF = [
 // ปิด thinking สำหรับงานเบา — เร็วขึ้น ~5 เท่า โดยคำตอบไม่ต่างกัน
 const NO_THINKING = { thinkingBudget: 0 };
 
-// เรียก Gemini ให้ตอบเป็น JSON object (fast = งานเบา ไม่ต้องคิดเยอะ)
-async function geminiJson(prompt, { fast = false } = {}) {
-  const res = await genai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      safetySettings: SAFETY_OFF,
-      ...(fast && { thinkingConfig: NO_THINKING }),
-    },
+// ==================== OPENAI FALLBACK ====================
+// Gemini เป็นตัวหลักเหมือนเดิม ถ้าเรียกไม่ผ่าน (คีย์หมดอายุ / quota / โดน filter)
+// จะสลับไป OpenAI ให้อัตโนมัติ เพื่อไม่ให้ทั้งบอทหยุดทำงานเพราะคีย์เดียว
+const OpenAI = require('openai');
+const OPENAI_MODEL = 'gpt-4.1-mini';
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+
+// เมื่อ Gemini พัง จะพักไม่เรียกซ้ำ 10 นาที (ไม่งั้นทุกข้อความต้องรอ Gemini timeout ก่อนเสมอ)
+// พอครบ 10 นาทีจะลอง Gemini ใหม่เอง — ใส่คีย์ใหม่ใน .env แล้วรีสตาร์ทได้ทันทีเช่นกัน
+const GEMINI_COOLDOWN_MS = 10 * 60 * 1000;
+let geminiDownUntil = 0;
+
+function isGeminiDown() {
+  if (!process.env.GEMINI_API_KEY) return true;
+  return Date.now() < geminiDownUntil;
+}
+
+function markGeminiDown(err) {
+  const first = geminiDownUntil === 0 || Date.now() >= geminiDownUntil;
+  geminiDownUntil = Date.now() + GEMINI_COOLDOWN_MS;
+  if (first) {
+    console.error(`⚠️ Gemini ใช้ไม่ได้ → สลับไป OpenAI (${OPENAI_MODEL}) 10 นาที: ${err.message}`);
+  }
+}
+
+// ดึง JSON ออกจากคำตอบ เผื่อโมเดลห่อด้วย ```json ... ```
+function parseJsonLoose(text) {
+  const clean = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/, '').trim();
+  return JSON.parse(clean);
+}
+
+async function openaiJson(prompt) {
+  if (!openai) throw new Error('ไม่มีทั้ง GEMINI_API_KEY และ OPENAI_API_KEY ที่ใช้ได้');
+  const res = await openai.chat.completions.create({
+    model: OPENAI_MODEL,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: 'ตอบกลับเป็น JSON object เท่านั้น ห้ามมีข้อความอื่นนอก JSON' },
+      { role: 'user', content: prompt },
+    ],
   });
-  if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
-  return JSON.parse(res.text);
+  const text = res.choices?.[0]?.message?.content;
+  if (!text) throw new Error('OpenAI ไม่ตอบกลับ');
+  return parseJsonLoose(text);
+}
+
+async function openaiText(prompt) {
+  if (!openai) throw new Error('ไม่มีทั้ง GEMINI_API_KEY และ OPENAI_API_KEY ที่ใช้ได้');
+  const res = await openai.chat.completions.create({
+    model: OPENAI_MODEL,
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const text = res.choices?.[0]?.message?.content;
+  if (!text) throw new Error('OpenAI ไม่ตอบกลับ');
+  return text.trim();
+}
+
+// เรียก Gemini ให้ตอบเป็น JSON object (fast = งานเบา ไม่ต้องคิดเยอะ)
+// ถ้า Gemini พัง (คีย์หมดอายุ / โดน filter / quota) จะสลับไป OpenAI ให้อัตโนมัติ
+async function geminiJson(prompt, { fast = false } = {}) {
+  if (!isGeminiDown()) {
+    try {
+      const res = await genai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          safetySettings: SAFETY_OFF,
+          ...(fast && { thinkingConfig: NO_THINKING }),
+        },
+      });
+      if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
+      return JSON.parse(res.text);
+    } catch (err) {
+      markGeminiDown(err);
+    }
+  }
+  return openaiJson(prompt);
 }
 
 // เรียก Gemini ให้ตอบเป็นข้อความล้วน (ใช้กับข้อความสั้นๆ ตอบเล่น)
 async function geminiText(prompt) {
-  const res = await genai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: prompt,
-    config: { safetySettings: SAFETY_OFF, thinkingConfig: NO_THINKING },
-  });
-  if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
-  return res.text.trim();
+  if (!isGeminiDown()) {
+    try {
+      const res = await genai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: prompt,
+        config: { safetySettings: SAFETY_OFF, thinkingConfig: NO_THINKING },
+      });
+      if (!res.text) throw new Error('Gemini ไม่ตอบกลับ (อาจโดน filter บล็อก)');
+      return res.text.trim();
+    } catch (err) {
+      markGeminiDown(err);
+    }
+  }
+  return openaiText(prompt);
 }
 
 const client = new Client({
@@ -102,6 +176,14 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN_SHEET;
 const CHANNEL_ID = '1488904036999499910';
 //const CHANNEL_ID = 'test';
 
+// ==================== STANDBY MODE ====================
+// บอทเริ่มมาในโหมด "หยุดทำงาน" — ไม่ลง Sheet ไม่ตอบ ไม่ react ไม่เตือน ไม่ส่ง DM ตามเวลา
+// จะกลับมาทำงานเมื่อ "สมาชิก" (ไม่ใช่ admin) พิมพ์คำปลุก แล้วบอทตอบ "กลับมาทำงานแล้ว"
+// admin พิมพ์คำปลุกเอง = ไม่ปลุก (บอทไม่ action อะไรเหมือนเดิม)
+const WAKE_WORD = 'สาดไปสมาชิก';
+const WAKE_REPLY = 'กลับมาทำงานแล้ว';
+let botActive = false;
+
 // DM Control Map (userId → channelId)
 const dmControlMap = new Map();
 
@@ -121,6 +203,25 @@ const REMINDER_TIMES = [
   { hour: 21, minute: 0,  type: 'today' },
   { hour: 22, minute: 0,  type: 'today' },
   { hour: 23, minute: 0,  type: 'today' },       // 5 ทุ่ม = รอบสุดท้ายของวันนี้
+];
+
+// ==================== SCHEDULED DM ====================
+
+// ข้อความตั้งเวลาส่ง DM หาคนใดคนหนึ่ง (แยกจากระบบ timesheet ทั้งหมด)
+// - เวลาเป็น Asia/Bangkok (ตั้ง TZ ไว้บรรทัดบนสุดของไฟล์แล้ว)
+// - once: true = ส่งครั้งเดียวแล้วเลิก, false = ส่งทุกวันเวลานี้
+// - skipHoliday: true = ไม่ส่งวันเสาร์-อาทิตย์และวันหยุดนักขัตฤกษ์
+// - ถ้า message ยังเป็น placeholder จะไม่ส่ง (กันเผลอยิงข้อความเปล่าใส่คนจริง)
+const SCHEDULED_DM_PLACEHOLDER = 'ใส่ข้อความที่จะส่งตรงนี้';
+const SCHEDULED_DMS = [
+  {
+    hour: 23,
+    minute: 10,
+    userId: '1369270229481422908',   // natthasitart
+    message: SCHEDULED_DM_PLACEHOLDER,
+    once: true,
+    skipHoliday: false,
+  },
 ];
 
 // ==================== GOOGLE SHEETS AUTH ====================
@@ -750,6 +851,7 @@ async function exportSheetPerPerson(filters, message) {
 
 client.once('ready', async () => {
   console.log(`✅ Bot พร้อมใช้งาน: ${client.user.tag}`);
+  console.log(`⏸️ โหมดหยุดทำงาน — รอสมาชิกพิมพ์ "${WAKE_WORD}" (admin พิมพ์ไม่ปลุก)`);
   console.log(`📊 เชื่อมต่อ Google Sheet ID: ${SPREADSHEET_ID}`);
 
   const headers = await getHeaders();
@@ -838,6 +940,23 @@ client.on('messageCreate', async (message) => {
       }
       return;
     }
+  }
+
+  // ==================== ประตูโหมดหยุดทำงาน ====================
+  // ทุกอย่างหลังบรรทัดนี้คือ "งาน" ของบอท — ถ้ายังไม่ถูกปลุกจะไม่ทำอะไรเลย
+  if (!botActive) {
+    // admin พิมพ์เอง = ไม่ปลุก (เหมือนเดิม: บอทไม่ action อะไรกับข้อความ admin)
+    if (message.author.id === ADMIN_ID) return;
+    if (message.content.replace(/\s+/g, '').includes(WAKE_WORD)) {
+      botActive = true;
+      console.log(`▶️ ถูกปลุกโดย ${message.author.username} (${message.author.id})`);
+      try {
+        await message.reply(WAKE_REPLY);
+      } catch (err) {
+        console.error('❌ ตอบข้อความปลุกไม่ได้:', err.message);
+      }
+    }
+    return;   // ข้อความที่ปลุกก็จบแค่นี้ ไม่ลง Sheet
   }
 
   if (message.channel.id !== CHANNEL_ID) return;
@@ -1018,6 +1137,7 @@ client.on('messageCreate', async (message) => {
 
 // เมื่อมีการแก้ไขข้อความ → ให้ AI วิเคราะห์ใหม่แล้วอัพเดท
 client.on('messageUpdate', async (oldMessage, newMessage) => {
+  if (!botActive) return;
   // ถ้าข้อความเป็น partial (หลัง restart) ให้ fetch ข้อมูลเต็มก่อน
   if (newMessage.partial) await newMessage.fetch();
   if (newMessage.author?.bot) return;
@@ -1065,6 +1185,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 
 // เมื่อมีการลบข้อความ → ลบทุกแถวที่เกี่ยวข้องใน Sheet
 client.on('messageDelete', async (message) => {
+  if (!botActive) return;
   if (message.channel.id !== CHANNEL_ID) return;
 
   const rows = await findAllRowsByMessageId(message.id);
@@ -1149,6 +1270,7 @@ async function checkMissingUsers(targetDate = new Date()) {
 
 // ส่งแจ้งเตือนใน Discord
 async function sendReminder(type = 'today') {
+  if (!botActive) return;   // ยังไม่ถูกปลุก → ไม่แจ้งเตือน
   // ถ้าวันนี้เป็นวันหยุด → ไม่แจ้งเตือนอะไรเลย (รวมการแจ้งเตือนย้อนหลังด้วย)
   if (isHoliday()) return;
 
@@ -1211,6 +1333,7 @@ async function sendReminder(type = 'today') {
 // เก็บ flag ว่าเวลาไหนส่งไปแล้ว (reset ทุกวัน)
 const reminderSentFlags = new Set();
 setInterval(() => {
+  if (!botActive) return;   // ยังไม่ถูกปลุก → ไม่แตะ flag ด้วย จะได้ยิงรอบที่เหลือได้หลังถูกปลุก
   const now = new Date();
   const h = now.getHours();
   const m = now.getMinutes();
@@ -1230,6 +1353,83 @@ setInterval(() => {
       }
     }
   }
+}, 10 * 1000);
+
+// ==================== SCHEDULED DM RUNNER ====================
+
+// ส่ง DM 1 job — แยกออกมาเป็นฟังก์ชันเพื่อให้เทสได้โดยไม่ต้องรอเวลาจริง
+async function sendScheduledDm(job) {
+  const label = `${job.hour}:${String(job.minute).padStart(2, '0')}`;
+  if (!job.message || job.message === SCHEDULED_DM_PLACEHOLDER) {
+    console.warn(`⚠️ ข้าม scheduled DM ${label} — ยังไม่ได้ใส่ข้อความ`);
+    return false;
+  }
+  if (job.skipHoliday && isHoliday()) {
+    console.log(`⏭️ ข้าม scheduled DM ${label} — วันหยุด`);
+    return false;
+  }
+  try {
+    const user = await client.users.fetch(job.userId);
+    await user.send(job.message);
+    console.log(`📨 ส่ง DM ${label} ให้ ${user.username} (${job.userId}) แล้ว`);
+    return true;
+  } catch (err) {
+    // ที่เจอบ่อยสุดคือ 50007 = ปลายทางปิดรับ DM จากคนในเซิร์ฟเวอร์
+    console.error(`❌ ส่ง DM ให้ ${job.userId} ไม่สำเร็จ: ${err.message}`);
+    return false;
+  }
+}
+
+// job แบบ once ต้องจำข้ามการ restart ไม่งั้นบอทรีสตาร์ททีก็ยิงซ้ำอีกวัน → เก็บลงไฟล์
+const SCHEDULED_DM_STATE_FILE = path.join(__dirname, 'scheduled-dm-sent.json');
+
+function jobKey(job) {
+  return `${job.userId}@${job.hour}:${String(job.minute).padStart(2, '0')}`;
+}
+
+function loadScheduledDmDone() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(SCHEDULED_DM_STATE_FILE, 'utf8')));
+  } catch {
+    return new Set();   // ไม่มีไฟล์ = ยังไม่เคยส่ง
+  }
+}
+
+function markScheduledDmDone(job) {
+  scheduledDmDone.add(jobKey(job));
+  try {
+    fs.writeFileSync(SCHEDULED_DM_STATE_FILE, JSON.stringify([...scheduledDmDone], null, 2), 'utf8');
+  } catch (err) {
+    console.error(`❌ เขียน ${SCHEDULED_DM_STATE_FILE} ไม่ได้: ${err.message}`);
+  }
+}
+
+// เช็คทุก 10 วินาทีเหมือน reminder ด้านบน — flag กันส่งซ้ำในนาทีเดียวกัน
+const scheduledDmSentFlags = new Set();
+const scheduledDmDone = loadScheduledDmDone();   // สำหรับ job ที่ once: true
+
+setInterval(() => {
+  if (!botActive) return;   // ยังไม่ถูกปลุก → ไม่ส่ง DM ตามเวลา
+  const now = new Date();
+  const h = now.getHours();
+  const m = now.getMinutes();
+
+  // reset flag ตอนเที่ยงคืน เพื่อให้ job รายวันส่งได้อีกในวันถัดไป
+  if (h === 0 && m === 1) scheduledDmSentFlags.clear();
+
+  SCHEDULED_DMS.forEach((job) => {
+    if (h !== job.hour || m !== job.minute) return;
+
+    const key = jobKey(job);
+    if (job.once && scheduledDmDone.has(key)) return;
+    if (scheduledDmSentFlags.has(key)) return;
+    scheduledDmSentFlags.add(key);
+
+    // mark เฉพาะตอนส่งสำเร็จจริง ถ้าส่งไม่ผ่านจะได้ลองใหม่พรุ่งนี้
+    sendScheduledDm(job).then((sent) => {
+      if (sent && job.once) markScheduledDmDone(job);
+    });
+  });
 }, 10 * 1000);
 
 // ==================== MORNING MESSAGE ====================
@@ -1274,6 +1474,7 @@ setInterval(() => {
 // ==================== BUTTON INTERACTION ====================
 
 client.on('interactionCreate', async (interaction) => {
+  if (!botActive) return;
   if (!interaction.isButton()) return;
   if (!interaction.customId.startsWith('choice_')) return;
 
