@@ -1,0 +1,8 @@
+node_modules/
+.claude/
+.git/
+.env
+google-credentials.json
+cookies.txt
+*.xlsx
+scheduled-dm-sent.json
