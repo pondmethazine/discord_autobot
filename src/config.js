@@ -46,6 +46,13 @@ export const config = {
   maxConcurrentRuns: num('MAX_CONCURRENT_RUNS', 3),
   // How long an approval button waits before it counts as "deny".
   approvalTimeoutMin: num('APPROVAL_TIMEOUT_MIN', 360),
+
+  // File bridge to the "พ่อใหญ่" session in Claude Desktop (format: $BOSS_DIR/README.md).
+  bossDir: process.env.BOSS_DIR || path.join(os.homedir(), '.claude', 'boss'),
+  // Optional channel where every owner message goes to พ่อใหญ่ (no `!boss` needed); its replies land there too.
+  // Empty = use `!boss <text>` in the home channel, replies go to the home channel.
+  bossChannelId: process.env.BOSS_CHANNEL_ID || '',
+  bossPollSec: num('BOSS_POLL_SEC', 20),
 };
 
 export function assertDiscordConfig() {

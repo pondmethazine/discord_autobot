@@ -11,6 +11,7 @@ import { Store } from './store.js';
 import { runTurn } from './agent.js';
 import { createWorktree, listRepos, parseRepoPrefix } from './repos.js';
 import { chunk, codeBlock, fmtDuration } from './text.js';
+import { parseBossCommand, appendInbox, formatOutbox, startOutboxPoller } from './boss.js';
 
 assertDiscordConfig();
 const store = new Store(path.join(config.dataDir, 'state.json'));
@@ -208,8 +209,28 @@ const HELP = [
   '- พิมพ์งานในห้องนี้ = เปิดเธรดใหม่หนึ่งงาน เช่น `tttc-ocr-lcmd: แก้ DEF-032 ...` (ใส่ชื่อ repo นำหน้าเพื่อเปิด worktree ทันที, ไม่ใส่ก็ได้)',
   '- แนบรูป/PDF ได้ บอทอ่านเอง',
   '- ตอบในเธรด = สั่งต่องานเดิม · `!stop` หยุด · `!close` ปิดเธรด',
+  '- `!boss <ข้อความ>` ส่งคำสั่งให้ session พ่อใหญ่ใน Claude Desktop (ไม่รันในบอท) คำตอบจะโผล่ในห้องนี้',
   '- `!status` งานทั้งหมด · `!repos` รายชื่อ repo · `!help`',
 ].join('\n');
+
+// ---------- พ่อใหญ่ bridge ----------
+const bossReplyChannelId = () => config.bossChannelId || config.homeChannelId;
+
+function startBossBridge() {
+  startOutboxPoller({
+    dir: config.bossDir,
+    intervalMs: config.bossPollSec * 1000,
+    post: async (entry) => {
+      const ch = await client.channels.fetch(bossReplyChannelId());
+      const msg = formatOutbox(entry, config.ownerId);
+      const parts = chunk(msg.content);
+      for (const [i, part] of parts.entries()) {
+        await ch.send({ content: part, allowedMentions: i === 0 ? msg.allowedMentions : { users: [] } });
+      }
+    },
+  });
+  console.log(`boss bridge: ${config.bossDir} every ${config.bossPollSec}s → channel ${bossReplyChannelId()}`);
+}
 
 // ---------- events ----------
 client.on('messageCreate', async (message) => {
@@ -219,8 +240,24 @@ client.on('messageCreate', async (message) => {
     const ch = message.channel;
     const inHome = ch.id === config.homeChannelId;
     const inTaskThread = ch.isThread?.() && ch.parentId === config.homeChannelId;
-    if (!inHome && !inTaskThread) return;
+    const inBossChannel = Boolean(config.bossChannelId) && ch.id === config.bossChannelId;
+    if (!inHome && !inTaskThread && !inBossChannel) return;
     const content = message.content.trim();
+
+    const bossText = parseBossCommand(content, { inBossChannel });
+    if (bossText !== null) {
+      const files = await saveAttachments(message, 'boss');
+      const text = withAttachments(bossText, files);
+      if (!bossText && !files.length) return void (await message.reply('ใส่ข้อความด้วยคับ เช่น `!boss เช็ค session ที่ค้างอยู่`'));
+      appendInbox(config.bossDir, { id: message.id, from: message.author.id, text });
+      await message.react('📨').catch(() => {});
+      await message.reply(`-# ส่งให้พ่อใหญ่แล้ว (${message.id}) คำตอบจะมาในห้อง <#${bossReplyChannelId()}>`).catch(() => {});
+      return;
+    }
+    if (inBossChannel) {
+      if (content === '!help') return void (await message.reply(HELP));
+      return;
+    }
 
     if (content === '!help') return void (await message.reply(HELP));
     if (content === '!status') return void (await message.reply(statusReport()));
@@ -313,6 +350,7 @@ client.once('clientReady', async () => {
     th?.send(`<@${config.ownerId}> บอทรีสตาร์ทระหว่างทำงานนี้ งานหยุดกลางทาง ตอบในเธรดนี้เพื่อให้ทำต่อจากเดิมคับ`).catch(() => {});
   }
   await home.send(`ออนไลน์แล้วคับ · พิมพ์ \`!help\` ดูวิธีใช้`).catch(() => {});
+  startBossBridge();
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
